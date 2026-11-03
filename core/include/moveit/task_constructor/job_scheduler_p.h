@@ -84,7 +84,8 @@ struct Job
  *  jobs. Finished jobs are processed by the planning thread in finish order via commitFinished().
  *
  *  Exceptions thrown by `work` are caught on the worker and stored in Job::error. Exceptions thrown by
- *  callbacks propagate out of the function that invokes them (swallowed by abort()).
+ *  callbacks propagate out of the function that invokes them (swallowed by abort(), see drain() for
+ *  the handling of failing `cancel` callbacks).
  *
  *  Apart from Job::current(), all members must be called from the single planning thread only.
  */
@@ -121,7 +122,11 @@ public:
 	/// First Job::error of a committed job, read *after* its `complete` ran (null if there was none)
 	std::exception_ptr error() const;
 
-	/// Cancel queued jobs, wait for running jobs, and commitFinished() them
+	/** Cancel queued jobs, wait for running jobs, and commitFinished() them.
+	 *  Each queued job is cancelled even if the `cancel` of an earlier one throws; all finished jobs are
+	 *  committed as well, and afterwards the first exception thrown by a `cancel` is rethrown.
+	 *  (An exception thrown by `complete` instead propagates immediately, as for commitFinished().)
+	 */
 	void drain();
 
 	/** Cancel queued jobs, wait for running jobs, and cancel those and all finished-but-uncommitted ones as well.

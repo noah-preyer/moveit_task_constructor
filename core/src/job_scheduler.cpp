@@ -199,10 +199,21 @@ void JobScheduler::drain() {
 		cancelled.swap(queued_);  // workers cannot start these anymore
 		cv_finished_.wait(lock, [this] { return running_ == 0; });
 	}
-	for (JobPtr& job : cancelled)
-		if (job->cancel)
-			job->cancel(*job);
-	commitFinished();
+
+	// Every job needs its cancel/complete callback: a failing callback must not make us skip the remaining ones.
+	std::exception_ptr first_error;
+	for (JobPtr& job : cancelled) {
+		try {
+			if (job->cancel)
+				job->cancel(*job);
+		} catch (...) {
+			if (!first_error)
+				first_error = std::current_exception();
+		}
+	}
+	commitFinished();  // an exception thrown by complete() propagates, the remaining finished jobs are kept
+	if (first_error)
+		std::rethrow_exception(first_error);
 }
 
 void JobScheduler::abort() noexcept {

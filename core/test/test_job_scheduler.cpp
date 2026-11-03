@@ -332,6 +332,42 @@ TEST(JobScheduler, DrainCancelsQueuedAndCommitsRunning) {
 	EXPECT_EQ(s.inflight(), 0u);
 }
 
+TEST(JobScheduler, DrainHandlesAllJobsAndRethrowsIfCancelThrows) {
+	JobScheduler s(1);
+	std::atomic<bool> started{ false };
+	std::vector<char> completed;
+	std::vector<char> cancelled;
+
+	auto submit = [&](char name, std::function<void()> work, bool cancel_throws = false) {
+		Job job;
+		job.work = std::move(work);
+		job.complete = [&completed, name](Job&) { completed.push_back(name); };
+		job.cancel = [&cancelled, name, cancel_throws](Job&) {
+			cancelled.push_back(name);
+			if (cancel_throws)
+				throw std::runtime_error("cancel failed");
+		};
+		s.submit(std::move(job));
+	};
+	submit('F', [] {});  // finished, but not committed yet
+	ASSERT_TRUE(waitFinished(s));
+	submit('A', [&] {  // running
+		started = true;
+		std::this_thread::sleep_for(50ms);
+	});
+	submit(
+	    'B', [] {}, true);  // queued, cancel throws
+	submit('C', [] {});  // queued, has to be cancelled nevertheless
+	ASSERT_TRUE(waitUntil([&] { return started.load(); }));
+
+	EXPECT_THROW(s.drain(), std::runtime_error);
+
+	// every job got exactly one of complete/cancel, despite the exception
+	EXPECT_THAT(completed, ElementsAre('F', 'A'));
+	EXPECT_THAT(cancelled, ElementsAre('B', 'C'));
+	EXPECT_EQ(s.inflight(), 0u);
+}
+
 TEST(JobScheduler, DrainCommitsFinishedJobs) {
 	JobScheduler s(2);
 	std::atomic<int> done{ 0 };
