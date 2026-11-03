@@ -53,7 +53,20 @@ namespace solvers {
 
 MOVEIT_CLASS_FORWARD(PipelinePlanner);
 
-/** Use MoveIt's PlanningPipeline to plan a trajectory between to scenes */
+/** Use MoveIt's PlanningPipeline to plan a trajectory between to scenes
+ *
+ * Planning in parallel (Task::setNumThreads()): create() caches pipelines per (robot model, namespace, adapter
+ * parameter). Hence, all PipelinePlanners constructed from a node and a pipeline name share one pipeline, and
+ * their planning jobs are serialized (see exclusiveResources()), as planner plugins are not necessarily reentrant.
+ * Pipelines of different namespaces (e.g. "ompl" and "pilz_industrial_motion_planner") still run in parallel.
+ * To plan with the same planner plugin in parallel, construct a separate pipeline per planner and pass it in:
+ * @code
+ * auto pipeline = std::make_shared<planning_pipeline::PlanningPipeline>(
+ *     robot_model, node, "ompl", "planning_plugin", "request_adapters");
+ * auto planner = std::make_shared<solvers::PipelinePlanner>(pipeline);
+ * @endcode
+ * The robot model must be the one of the task (Task::setRobotModel()).
+ */
 class PipelinePlanner : public PlannerInterface
 {
 public:
@@ -86,6 +99,9 @@ public:
 	std::string getPlannerId() const override { return properties().get<std::string>("planner"); }
 
 	void init(const moveit::core::RobotModelConstPtr& robot_model) override;
+
+	/// the planning pipeline (shared with other planners using it), or this planner before init() created it
+	std::vector<const void*> exclusiveResources() const override;
 
 	Result plan(const planning_scene::PlanningSceneConstPtr& from, const planning_scene::PlanningSceneConstPtr& to,
 	            const core::JointModelGroup* jmg, double timeout, robot_trajectory::RobotTrajectoryPtr& result,

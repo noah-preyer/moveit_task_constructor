@@ -1,5 +1,12 @@
 #include <moveit/task_constructor/job_scheduler_p.h>
 #include <moveit/task_constructor/task_p.h>
+#include <moveit/task_constructor/solvers/cartesian_path.h>
+#include <moveit/task_constructor/solvers/joint_interpolation.h>
+#include <moveit/task_constructor/solvers/multi_planner.h>
+#include <moveit/task_constructor/solvers/pipeline_planner.h>
+#include <moveit/task_constructor/stages/connect.h>
+#include <moveit/task_constructor/stages/move_relative.h>
+#include <moveit/task_constructor/stages/move_to.h>
 
 #include "stage_mockups.h"
 #include "models.h"
@@ -25,6 +32,7 @@ using testing::Eq;
 using testing::HasSubstr;
 using testing::IsEmpty;
 using testing::Not;
+using testing::UnorderedElementsAre;
 
 // plan() runs the job path of the compute stages, but synchronously with an inline JobScheduler(0)
 struct InlineJobs : TaskTestBase
@@ -413,4 +421,132 @@ TEST_F(ParallelWrappers, DelayingWrapperForwardsChildJobs) {
 
 	EXPECT_TRUE(t.plan());
 	EXPECT_COSTS(t.solutions(), ElementsAre(1, 1, 1, 1, 1));
+}
+
+// stages declaring the same exclusive resource never compute at the same time
+struct ExclusiveResources : TaskTestBase
+{
+	ExclusiveResources() { t.setNumThreads(4); }
+};
+
+namespace {
+// GEN{0} → Alternatives{FWD(resource1), FWD(resource2)}, both stages simulating work
+void buildTwoResourceUsers(Task& task, const void* resource1, const void* resource2, ConcurrencyProbe& probe) {
+	task.add(Stage::pointer(new GeneratorMockup({ 0 })));
+	auto alternatives = std::make_unique<Alternatives>();
+	for (const void* resource : { resource1, resource2 }) {
+		auto fwd = new ForwardMockup();
+		fwd->resource = resource;
+		alternatives->add(Stage::pointer(withWork(fwd, 50ms, &probe)));
+	}
+	task.add(std::move(alternatives));
+}
+}  // namespace
+
+TEST_F(ExclusiveResources, SharedResourceNeverOverlaps) {
+	int r;
+	ConcurrencyProbe probe;
+	buildTwoResourceUsers(t, &r, &r, probe);
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_EQ(t.numSolutions(), 2u);
+	EXPECT_EQ(probe.max.load(), 1);
+}
+
+TEST_F(ExclusiveResources, DistinctResourcesOverlap) {
+	int r1, r2;
+	ConcurrencyProbe probe;
+	buildTwoResourceUsers(t, &r1, &r2, probe);
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_EQ(t.numSolutions(), 2u);
+	EXPECT_GE(probe.max.load(), 2);
+}
+
+TEST_F(ExclusiveResources, ClearedOnReinit) {
+	int r;
+	add(t, new GeneratorMockup({ 0 }));
+	auto fwd = add(t, new ForwardMockup());
+
+	fwd->resource = &r;
+	t.init();
+	EXPECT_THAT(fwd->pimpl()->exclusiveResources(), UnorderedElementsAre(&r));
+
+	fwd->resource = nullptr;
+	t.reset();
+	t.init();
+	EXPECT_THAT(fwd->pimpl()->exclusiveResources(), IsEmpty());
+}
+
+namespace {
+// planner without any functionality, relying on the default exclusiveResources()
+struct StubPlanner : solvers::PlannerInterface
+{
+	void init(const moveit::core::RobotModelConstPtr& /*robot_model*/) override {}
+
+	Result plan(const planning_scene::PlanningSceneConstPtr& /*from*/,
+	            const planning_scene::PlanningSceneConstPtr& /*to*/, const moveit::core::JointModelGroup* /*jmg*/,
+	            double /*timeout*/, robot_trajectory::RobotTrajectoryPtr& /*result*/,
+	            const moveit_msgs::msg::Constraints& /*path_constraints*/) override {
+		return { false, "stub" };
+	}
+
+	Result plan(const planning_scene::PlanningSceneConstPtr& /*from*/, const moveit::core::LinkModel& /*link*/,
+	            const Eigen::Isometry3d& /*offset*/, const Eigen::Isometry3d& /*target*/,
+	            const moveit::core::JointModelGroup* /*jmg*/, double /*timeout*/,
+	            robot_trajectory::RobotTrajectoryPtr& /*result*/,
+	            const moveit_msgs::msg::Constraints& /*path_constraints*/) override {
+		return { false, "stub" };
+	}
+
+	std::string getPlannerId() const override { return "stub"; }
+};
+}  // namespace
+
+struct PlannerResources : TaskTestBase
+{};
+
+TEST_F(PlannerResources, DefaultSerializesInstance) {
+	StubPlanner p;
+	EXPECT_THAT(p.exclusiveResources(), ElementsAre(&p));
+}
+
+TEST_F(PlannerResources, StatelessBuiltinsAreShareable) {
+	EXPECT_THAT(solvers::JointInterpolationPlanner{}.exclusiveResources(), IsEmpty());
+	EXPECT_THAT(solvers::CartesianPath{}.exclusiveResources(), IsEmpty());
+}
+
+TEST_F(PlannerResources, MultiPlannerCollectsChildren) {
+	auto stub1 = std::make_shared<StubPlanner>();
+	auto stub2 = std::make_shared<StubPlanner>();
+	solvers::MultiPlanner planner{ stub1, std::make_shared<solvers::JointInterpolationPlanner>(), stub2 };
+	EXPECT_THAT(planner.exclusiveResources(), UnorderedElementsAre(stub1.get(), stub2.get()));
+}
+
+// the pipeline is shared (and not necessarily reentrant), so planners using the same pipeline share the resource
+TEST_F(PlannerResources, PipelinePlannersSharingAPipelineShareTheResource) {
+	int dummy;  // non-owning pipeline pointer, which is never dereferenced
+	planning_pipeline::PlanningPipelinePtr pipeline(std::shared_ptr<void>(),
+	                                                reinterpret_cast<planning_pipeline::PlanningPipeline*>(&dummy));
+	solvers::PipelinePlanner a(pipeline), b(pipeline);
+	EXPECT_THAT(a.exclusiveResources(), ElementsAre(pipeline.get()));
+	EXPECT_THAT(b.exclusiveResources(), ElementsAre(pipeline.get()));
+
+	// without a pipeline (before init()), the planner itself is the resource
+	solvers::PipelinePlanner c{ rclcpp::Node::SharedPtr() };
+	EXPECT_THAT(c.exclusiveResources(), ElementsAre(&c));
+}
+
+TEST_F(PlannerResources, MoveToAndConnectRegisterSharedPlanner) {
+	auto stub = std::make_shared<StubPlanner>();
+	add(t, new GeneratorMockup({ 0 }));
+	auto move = add(t, new stages::MoveTo("move", stub));
+	auto rel = add(t, new stages::MoveRelative("rel", stub));
+	auto con = add(t, new stages::Connect("con", { { "group", stub } }));
+	add(t, new GeneratorMockup({ 0 }));
+
+	t.init();
+	EXPECT_THAT(move->pimpl()->exclusiveResources(), ElementsAre(stub.get()));
+	EXPECT_THAT(rel->pimpl()->exclusiveResources(), ElementsAre(stub.get()));
+	EXPECT_THAT(con->pimpl()->exclusiveResources(), ElementsAre(stub.get()));
 }

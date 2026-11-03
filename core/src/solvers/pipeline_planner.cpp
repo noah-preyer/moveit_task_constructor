@@ -152,6 +152,12 @@ void PipelinePlanner::init(const core::RobotModelConstPtr& robot_model) {
 	planner_->publishReceivedRequests(properties().get<bool>("publish_planning_requests"));
 }
 
+std::vector<const void*> PipelinePlanner::exclusiveResources() const {
+	if (planner_)
+		return { planner_.get() };
+	return { this };
+}
+
 void initMotionPlanRequest(moveit_msgs::msg::MotionPlanRequest& req, const PropertyMap& p,
                            const moveit::core::JointModelGroup* jmg, double timeout) {
 	req.group_name = jmg->getName();

@@ -657,6 +657,16 @@ std::ostream& operator<<(std::ostream& os, const StagePrivate& impl) {
 
 ComputeBase::ComputeBase(ComputeBasePrivate* impl) : Stage(impl) {}
 
+void ComputeBase::init(const moveit::core::RobotModelConstPtr& robot_model) {
+	pimpl()->exclusive_resources_.clear();
+	Stage::init(robot_model);
+}
+
+void ComputeBase::addExclusiveResource(const void* resource) {
+	if (resource)
+		pimpl()->exclusive_resources_.insert(resource);
+}
+
 PropagatingEitherWayPrivate::PropagatingEitherWayPrivate(PropagatingEitherWay* me, PropagatingEitherWay::Direction dir,
                                                          const std::string& name)
   : ComputeBasePrivate(me, name), configured_dir_(dir) {

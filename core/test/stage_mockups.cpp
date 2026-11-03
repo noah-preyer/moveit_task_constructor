@@ -151,6 +151,12 @@ PropagatorMockup::PropagatorMockup(PredefinedCosts&& costs, std::size_t solution
   , costs_{ std::move(costs) }
   , solutions_per_compute_{ solutions_per_compute } {}
 
+void PropagatorMockup::init(const moveit::core::RobotModelConstPtr& robot_model) {
+	PropagatingEitherWay::init(robot_model);
+	if (resource)
+		addExclusiveResource(resource);
+}
+
 void PropagatorMockup::computeForward(const InterfaceState& from) {
 	if (on_compute)
 		on_compute();

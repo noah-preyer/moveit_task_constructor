@@ -73,6 +73,9 @@ public:
 	            const moveit_msgs::msg::Constraints& path_constraints = moveit_msgs::msg::Constraints()) override;
 
 	std::string getPlannerId() const override { return "MultiPlanner"; }
+
+	/// the resources of all child planners
+	std::vector<const void*> exclusiveResources() const override;
 };
 }  // namespace solvers
 }  // namespace task_constructor

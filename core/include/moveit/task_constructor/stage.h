@@ -282,9 +282,20 @@ class ComputeBase : public Stage
 public:
 	PRIVATE_CLASS(ComputeBase)
 
+	/// forgets the exclusive resources of a previous init(). Derived classes re-register theirs after calling this.
+	void init(const moveit::core::RobotModelConstPtr& robot_model) override;
+
 protected:
 	/// ComputeBase can only be instantiated by derived classes in stage.cpp
 	ComputeBase(ComputeBasePrivate* impl);
+
+	/** Declare an object whose use must be serialized across stages, e.g. a planner that is not thread-safe
+	 *
+	 * With Task::setNumThreads() > 1, the compute() calls of stages declaring the same resource never run at the same
+	 * time. Call this from init() (after ComputeBase::init()), as init() forgets all previously declared resources.
+	 * A nullptr is ignored.
+	 */
+	void addExclusiveResource(const void* resource);
 };
 
 class PropagatingEitherWayPrivate;

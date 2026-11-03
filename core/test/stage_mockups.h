@@ -140,6 +140,7 @@ struct PropagatorMockup : public PropagatingEitherWay
 	size_t runs_{ 0 };
 	std::size_t solutions_per_compute_;
 	std::function<void()> on_compute;  // called first thing in computeForward() / computeBackward()
+	const void* resource = nullptr;  // exclusive resource to register in init() (if set)
 
 	static unsigned int id_;
 
@@ -147,6 +148,7 @@ struct PropagatorMockup : public PropagatingEitherWay
 	PropagatorMockup(std::initializer_list<double> costs)
 	  : PropagatorMockup{ PredefinedCosts{ std::list<double>{ costs }, true } } {}
 
+	void init(const moveit::core::RobotModelConstPtr& robot_model) override;
 	void computeForward(const InterfaceState& from) override;
 	void computeBackward(const InterfaceState& to) override;
 	void reset() override { runs_ = 0; };

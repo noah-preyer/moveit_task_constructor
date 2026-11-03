@@ -94,6 +94,9 @@ void Connect::init(const core::RobotModelConstPtr& robot_model) {
 			errors.push_back(*this, "invalid planner for group: " + pair.first);
 		else {
 			pair.second->init(robot_model);
+			// query after init(), as planners might only acquire their resources there
+			for (const void* resource : pair.second->exclusiveResources())
+				addExclusiveResource(resource);
 
 			auto jmg = robot_model->getJointModelGroup(pair.first);
 			groups.push_back(jmg);

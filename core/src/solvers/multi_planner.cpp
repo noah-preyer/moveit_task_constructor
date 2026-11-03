@@ -49,6 +49,15 @@ void MultiPlanner::init(const core::RobotModelConstPtr& robot_model) {
 		p->init(robot_model);
 }
 
+std::vector<const void*> MultiPlanner::exclusiveResources() const {
+	std::vector<const void*> resources;
+	for (const auto& p : *this) {
+		const std::vector<const void*> child_resources = p->exclusiveResources();
+		resources.insert(resources.end(), child_resources.begin(), child_resources.end());
+	}
+	return resources;
+}
+
 PlannerInterface::Result MultiPlanner::plan(const planning_scene::PlanningSceneConstPtr& from,
                                             const planning_scene::PlanningSceneConstPtr& to,
                                             const moveit::core::JointModelGroup* jmg, double timeout,

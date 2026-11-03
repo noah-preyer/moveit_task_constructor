@@ -50,6 +50,7 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <set>
 #include <vector>
 
 // define pimpl() functions accessing correctly casted pimpl_ pointer
@@ -291,8 +292,12 @@ public:
 	ComputeBasePrivate(Stage* me, const std::string& name) : StagePrivate(me, name) {}
 
 	bool supportsJobs() const override { return parallel_compute_; }
+	std::vector<const void*> exclusiveResources() const override {
+		return std::vector<const void*>(exclusive_resources_.begin(), exclusive_resources_.end());
+	}
 
 private:
+	std::set<const void*> exclusive_resources_;
 };
 PIMPL_FUNCTIONS(ComputeBase)
 

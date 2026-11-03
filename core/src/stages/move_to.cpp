@@ -99,6 +99,9 @@ void MoveTo::setGoal(const std::map<std::string, double>& joints) {
 void MoveTo::init(const moveit::core::RobotModelConstPtr& robot_model) {
 	PropagatingEitherWay::init(robot_model);
 	planner_->init(robot_model);
+	// query after init(), as planners might only acquire their resources there
+	for (const void* resource : planner_->exclusiveResources())
+		addExclusiveResource(resource);
 }
 
 bool MoveTo::getJointStateGoal(const boost::any& goal, const moveit::core::JointModelGroup* jmg,

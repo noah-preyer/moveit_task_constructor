@@ -83,6 +83,9 @@ void MoveRelative::setIKFrame(const Eigen::Isometry3d& pose, const std::string& 
 void MoveRelative::init(const moveit::core::RobotModelConstPtr& robot_model) {
 	PropagatingEitherWay::init(robot_model);
 	planner_->init(robot_model);
+	// query after init(), as planners might only acquire their resources there
+	for (const void* resource : planner_->exclusiveResources())
+		addExclusiveResource(resource);
 }
 
 static bool getJointStateFromOffset(const boost::any& direction, const Interface::Direction dir,

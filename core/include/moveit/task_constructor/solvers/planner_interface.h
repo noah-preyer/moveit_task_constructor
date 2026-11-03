@@ -43,6 +43,9 @@
 #include <moveit/task_constructor/properties.h>
 #include <Eigen/Geometry>
 
+#include <string>
+#include <vector>
+
 namespace planning_scene {
 MOVEIT_CLASS_FORWARD(PlanningScene);
 }
@@ -110,6 +113,14 @@ public:
 
 	// get name of the planner
 	virtual std::string getPlannerId() const = 0;
+
+	/** Objects whose use must be serialized when planning in parallel (see ComputeBase::addExclusiveResource())
+	 *
+	 * Stages using this planner register them in init(). Stages sharing a resource never plan at the same time.
+	 * By default, planners are assumed to be not thread-safe, so the planner instance is the resource.
+	 * Override for planners that are stateless or that delegate to other planners.
+	 */
+	virtual std::vector<const void*> exclusiveResources() const { return { this }; }
 };
 }  // namespace solvers
 }  // namespace task_constructor
