@@ -22,7 +22,11 @@ jobs:
           - IMAGE: humble-source
           - IMAGE: humble-source
             NAME: tsan
-            DOCKER_RUN_OPTS: -e TSAN_OPTIONS="suppressions=$PWD/.github/workflows/tsan.suppressions second_deadlock_stack=1"
+            # PRELOAD: the Python extension is instrumented too. CMake skips the Python tests when PRELOAD is set,
+            # as they cannot load an instrumented extension into the plain python interpreter.
+            DOCKER_RUN_OPTS: >-
+              -e PRELOAD=libtsan.so.0
+              -e TSAN_OPTIONS="suppressions=$PWD/.github/workflows/tsan.suppressions second_deadlock_stack=1"
             TARGET_CMAKE_ARGS: -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=thread -O1 -g"
 
     # The tsan job does not fail the workflow: uninstrumented ROS and MoveIt binaries produce third-party reports.

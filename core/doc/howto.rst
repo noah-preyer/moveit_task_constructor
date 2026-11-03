@@ -414,22 +414,30 @@ not reentrant.
 Pipelines with different namespaces (e.g. ``ompl`` and ``pilz_industrial_motion_planner``) run in parallel.
 
 To plan with the same planner plugin in parallel, create a separate pipeline for each stage and pass it to the
-planner:
+planner. Planners are given to a stage when it is constructed (``MoveTo`` and ``MoveRelative`` take the planner as
+second constructor argument, ``Connect`` takes a ``GroupPlannerVector``):
 
 .. code-block:: cpp
 
     #include <moveit/planning_pipeline/planning_pipeline.h>
+    #include <moveit/task_constructor/solvers/pipeline_planner.h>
+    #include <moveit/task_constructor/stages/move_to.h>
 
-    auto make_ompl_planner = [&]() {
+    namespace mtc = moveit::task_constructor;
+
+    // every call creates a separate pipeline, hence a separate planner plugin instance
+    mtc::solvers::PlannerInterfacePtr makeOmplPlanner(const rclcpp::Node::SharedPtr& node,
+                                                      const moveit::core::RobotModelConstPtr& robot_model) {
         auto pipeline = std::make_shared<planning_pipeline::PlanningPipeline>(
-            task.getRobotModel(), node, "ompl", "planning_plugin", "request_adapters");
-        return std::make_shared<solvers::PipelinePlanner>(pipeline);
-    };
-    move_to_a->setPlanner(make_ompl_planner());
-    move_to_b->setPlanner(make_ompl_planner());
+            robot_model, node, "ompl", "planning_plugin", "request_adapters");
+        return std::make_shared<mtc::solvers::PipelinePlanner>(pipeline);
+    }
 
-The robot model must be the one of the task. Constructing a ``PipelinePlanner`` from an existing pipeline is
-available in C++ only.
+    // after task.loadRobotModel(node): the robot model must be the one of the task
+    task.add(std::make_unique<mtc::stages::MoveTo>("move a", makeOmplPlanner(node, task.getRobotModel())));
+    task.add(std::make_unique<mtc::stages::MoveTo>("move b", makeOmplPlanner(node, task.getRobotModel())));
+
+Constructing a ``PipelinePlanner`` from an existing pipeline is available in C++ only.
 
 **Custom shared objects.**
 If your own stage uses an object that must not be used by two threads at once (a service client, a device handle, a
@@ -438,10 +446,17 @@ same address never compute at the same time; workers pick the first queued job w
 
 .. code-block:: cpp
 
-    void MyStage::init(const moveit::core::RobotModelConstPtr& robot_model) {
-        PropagatingForward::init(robot_model);  // forgets the resources of a previous init()
-        addExclusiveResource(shared_client_.get());
-    }
+    class MyStage : public PropagatingForward {
+    public:
+        void init(const moveit::core::RobotModelConstPtr& robot_model) override {
+            PropagatingForward::init(robot_model);  // forgets the resources of a previous init()
+            addExclusiveResource(shared_client_.get());
+        }
+        // ...
+
+    private:
+        std::shared_ptr<Client> shared_client_;  // shared with other stages
+    };
 
 ``init()`` clears the declared resources, so register them after calling the base class's ``init()``, every time.
 A custom planner can declare its own resources by overriding ``PlannerInterface::exclusiveResources()``, which
