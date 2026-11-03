@@ -47,7 +47,11 @@
 
 #include <scope_guard/scope_guard.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <exception>
 #include <functional>
+#include <thread>
 
 using namespace std::chrono_literals;
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_task_constructor.task");
@@ -70,6 +74,17 @@ std::string rosNormalizeName(const std::string& name) {
 	}
 	return n;
 }
+
+// point in time `timeout` seconds after start, saturating at time_point::max() (the default timeout is DBL_MAX)
+std::chrono::steady_clock::time_point deadlineAfter(std::chrono::steady_clock::time_point start, double timeout) {
+	using clock = std::chrono::steady_clock;
+	const std::chrono::duration<double> available(timeout);
+	if (available <= available.zero())
+		return start;
+	if (!(available < clock::time_point::max() - start))  // NaN as well: never time out, as planSequential()
+		return clock::time_point::max();
+	return start + std::chrono::duration_cast<clock::duration>(available);
+}
 }  // namespace
 
 namespace moveit {
@@ -84,6 +99,7 @@ TaskPrivate& TaskPrivate::operator=(TaskPrivate&& other) {
 	robot_model_ = std::move(other.robot_model_);
 	robot_model_loader_ = std::move(other.robot_model_loader_);
 	task_cbs_ = std::move(other.task_cbs_);
+	num_threads_ = other.num_threads_;
 	inline_jobs_ = other.inline_jobs_;
 	// Ensure same introspection status, but keep the existing introspection instance,
 	// which stores this task pointer and includes it in its task_id_
@@ -265,34 +281,112 @@ moveit::core::MoveItErrorCode Task::plan(size_t max_solutions) {
 		auto detach = sg::make_scope_guard([impl]() noexcept { impl->attachScheduler(nullptr); });
 		return planSequential(max_solutions);
 	}
-	return planSequential(max_solutions);
+
+	const unsigned int num_threads =
+	    impl->num_threads_ == 0 ? std::max(1u, std::thread::hardware_concurrency()) : impl->num_threads_;
+	if (num_threads == 1)
+		return planSequential(max_solutions);
+	return planParallel(max_solutions, num_threads);
 }
+
+namespace {
+// Print state and return success if there are solutions otherwise the input error_code
+moveit::core::MoveItErrorCode successOr(const Task& task, const int32_t error_code) {
+	if (task.numSolutions() > 0)
+		return moveit::core::MoveItErrorCode::SUCCESS;
+	task.printState();
+	task.explainFailure();
+	return error_code;
+}
+}  // namespace
 
 moveit::core::MoveItErrorCode Task::planSequential(size_t max_solutions) {
 	auto impl = pimpl();
 
-	// Print state and return success if there are solutions otherwise the input error_code
-	const auto success_or = [this](const int32_t error_code) -> int32_t {
-		if (numSolutions() > 0)
-			return moveit::core::MoveItErrorCode::SUCCESS;
-		printState();
-		explainFailure();
-		return error_code;
-	};
 	const double available_time = timeout();
 	const auto start_time = std::chrono::steady_clock::now();
 	while (canCompute() && (max_solutions == 0 || numSolutions() < max_solutions)) {
 		if (impl->preempt_requested_)
-			return success_or(moveit::core::MoveItErrorCode::PREEMPTED);
+			return successOr(*this, moveit::core::MoveItErrorCode::PREEMPTED);
 		if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count() >= available_time)
-			return success_or(moveit::core::MoveItErrorCode::TIMED_OUT);
+			return successOr(*this, moveit::core::MoveItErrorCode::TIMED_OUT);
 		compute();
 		for (const auto& cb : impl->task_cbs_)
 			cb(*this);
 		if (impl->introspection_)
 			impl->introspection_->publishTaskState();
 	};
-	return success_or(moveit::core::MoveItErrorCode::PLANNING_FAILED);
+	return successOr(*this, moveit::core::MoveItErrorCode::PLANNING_FAILED);
+}
+
+moveit::core::MoveItErrorCode Task::planParallel(size_t max_solutions, unsigned int num_threads) {
+	using clock = std::chrono::steady_clock;
+	auto impl = pimpl();
+
+	JobScheduler scheduler(num_threads);
+	impl->attachScheduler(&scheduler);
+	// If this (planning) thread throws, discard all jobs including their results. Harmless after a regular stop.
+	auto abort_jobs = sg::make_scope_guard([impl, &scheduler]() noexcept {
+		scheduler.abort();
+		impl->attachScheduler(nullptr);
+	});
+
+	const auto notify = [this, impl] {
+		for (const auto& cb : impl->task_cbs_)
+			cb(*this);
+		if (impl->introspection_)
+			impl->introspection_->publishTaskState();
+	};
+
+	const clock::time_point deadline = deadlineAfter(clock::now(), timeout());
+	int32_t result = moveit::core::MoveItErrorCode::PLANNING_FAILED;
+	while (true) {
+		if (impl->preempt_requested_) {
+			result = moveit::core::MoveItErrorCode::PREEMPTED;
+			break;
+		}
+		const clock::time_point now = clock::now();
+		if (now >= deadline) {
+			result = moveit::core::MoveItErrorCode::TIMED_OUT;
+			break;
+		}
+		if (max_solutions != 0 && numSolutions() >= max_solutions)
+			break;
+
+		bool progress = false;
+		if (canCompute()) {
+			compute();  // submits jobs of idle compute stages, all other work happens right here
+			progress = true;
+		} else if (scheduler.inflight() == 0)
+			break;  // all stages are exhausted
+		else  // wait for jobs, but wake up regularly to check for preemption
+			scheduler.waitForFinished(std::min(deadline, now + 10ms));
+
+		progress |= scheduler.commitFinished() > 0;
+		if (scheduler.error())
+			break;  // rethrown below, once the other jobs are finished
+		if (progress)
+			notify();
+	}
+
+	// stop: cancel queued jobs, wait for running ones and commit their results
+	const bool pending_jobs = scheduler.inflight() > 0;
+	scheduler.drain();
+	impl->attachScheduler(nullptr);
+	if (pending_jobs)
+		notify();
+
+	if (const std::exception_ptr error = scheduler.error())
+		std::rethrow_exception(error);
+	return successOr(*this, result);
+}
+
+void Task::setNumThreads(unsigned int num_threads) {
+	pimpl()->num_threads_ = num_threads;
+}
+
+unsigned int Task::numThreads() const {
+	return pimpl()->num_threads_;
 }
 
 void Task::preempt() {

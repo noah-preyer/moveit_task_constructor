@@ -9,7 +9,9 @@
 #include "models.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <functional>
 #include <string>
 
@@ -90,6 +92,28 @@ struct MonitoringGeneratorMockup : public MonitoringGenerator
 	void compute() override {}
 	void onNewSolution(const SolutionBase& s) override;
 	void reset() override { runs_ = 0; };
+};
+
+/* MonitoringGenerator that queues the monitored solutions and spawns one state per compute(),
+   i.e. its compute() may run as a job, while new solutions are received */
+struct QueueingMonitoringGeneratorMockup : public MonitoringGenerator
+{
+	std::deque<const SolutionBase*> queue_;  // monitored solutions, not yet processed by compute()
+	size_t runs_{ 0 };
+	std::function<void()> on_compute;  // called first thing in compute()
+
+	static unsigned int id_;
+
+	QueueingMonitoringGeneratorMockup(Stage* monitored);
+
+	bool canCompute() const override { return !queue_.empty(); }
+	void compute() override;
+	void onNewSolution(const SolutionBase& s) override { queue_.push_back(&s); }
+	void reset() override {
+		queue_.clear();
+		runs_ = 0;
+		MonitoringGenerator::reset();
+	};
 };
 
 struct ConnectMockup : public Connecting
@@ -185,6 +209,9 @@ struct ConcurrencyProbe
 		ConcurrencyProbe& probe;
 	};
 };
+
+/* on_compute hook simulating `duration` of work, holding a Scope of `probe` (if given) meanwhile */
+std::function<void()> simulateWork(std::chrono::milliseconds duration, ConcurrencyProbe* probe = nullptr);
 
 #define EXPECT_COSTS(value, matcher)                                           \
 	{                                                                           \

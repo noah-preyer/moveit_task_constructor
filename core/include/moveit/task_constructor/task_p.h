@@ -70,6 +70,7 @@ private:
 	robot_model_loader::RobotModelLoaderPtr robot_model_loader_;
 	moveit::core::RobotModelConstPtr robot_model_;
 	std::atomic<bool> preempt_requested_;
+	unsigned int num_threads_ = 1;  // see Task::setNumThreads()
 	bool inline_jobs_ = false;
 
 	// introspection and monitoring

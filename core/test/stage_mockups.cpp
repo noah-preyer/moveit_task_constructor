@@ -3,11 +3,15 @@
 
 #include "stage_mockups.h"
 
+#include <optional>
+#include <thread>
+
 namespace moveit {
 namespace task_constructor {
 
 unsigned int GeneratorMockup::id_ = 0;
 unsigned int MonitoringGeneratorMockup::id_ = 0;
+unsigned int QueueingMonitoringGeneratorMockup::id_ = 0;
 unsigned int ConnectMockup::id_ = 0;
 unsigned int PropagatorMockup::id_ = 0;
 unsigned int ForwardMockup::id_ = 0;
@@ -16,6 +20,7 @@ unsigned int BackwardMockup::id_ = 0;
 void resetMockupIds() {
 	GeneratorMockup::id_ = 0;
 	MonitoringGeneratorMockup::id_ = 0;
+	QueueingMonitoringGeneratorMockup::id_ = 0;
 	ConnectMockup::id_ = 0;
 	PropagatorMockup::id_ = 0;
 	ForwardMockup::id_ = 0;
@@ -32,6 +37,15 @@ ConcurrencyProbe::Scope::Scope(ConcurrencyProbe& p) : probe(p) {
 
 ConcurrencyProbe::Scope::~Scope() {
 	--probe.current;
+}
+
+std::function<void()> simulateWork(std::chrono::milliseconds duration, ConcurrencyProbe* probe) {
+	return [duration, probe] {
+		std::optional<ConcurrencyProbe::Scope> scope;
+		if (probe)
+			scope.emplace(*probe);
+		std::this_thread::sleep_for(duration);
+	};
 }
 
 PredefinedCosts::PredefinedCosts(std::list<double>&& costs, bool finite)
@@ -103,6 +117,20 @@ void MonitoringGeneratorMockup::onNewSolution(const SolutionBase& s) {
 	spawn(InterfaceState{ s.end()->scene()->diff() }, SubTrajectory{});
 }
 
+QueueingMonitoringGeneratorMockup::QueueingMonitoringGeneratorMockup(Stage* monitored)
+  : MonitoringGenerator{ "QMON" + std::to_string(++id_), monitored } {}
+
+void QueueingMonitoringGeneratorMockup::compute() {
+	if (on_compute)
+		on_compute();
+	const SolutionBase* s = queue_.front();
+	queue_.pop_front();
+	++runs_;
+
+	// as a job, only the scene of the input may be read, but not its priority
+	spawn(InterfaceState{ s->end()->scene()->diff() }, SubTrajectory{});
+}
+
 ConnectMockup::ConnectMockup(PredefinedCosts&& costs)
   : Connecting{ "CON" + std::to_string(++id_) }, costs_{ std::move(costs) } {}
 
@@ -113,7 +141,8 @@ void ConnectMockup::compute(const InterfaceState& from, const InterfaceState& to
 
 	auto solution{ std::make_shared<SubTrajectory>() };
 	solution->setCost(costs_.cost());
-	solution->setComment(std::to_string(from.priority().cost()) + " -> " + std::to_string(to.priority().cost()));
+	// don't read the priority of from/to: as a job, compute() runs while the planning thread may change it
+	solution->setComment(std::to_string(runs_));
 	connect(from, to, solution);
 }
 

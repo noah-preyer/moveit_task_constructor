@@ -131,6 +131,19 @@ public:
 
 	/// reset, init scene (if not yet done), and init all stages, then start planning
 	moveit::core::MoveItErrorCode plan(size_t max_solutions = 0);
+
+	/** Set the number of threads plan() uses to compute stages concurrently
+	 *
+	 * 1 (default): compute all stages sequentially in the thread calling plan().
+	 * 0: use as many threads as std::thread::hardware_concurrency() reports.
+	 *
+	 * With multiple threads, the compute() of Generator, PropagatingEitherWay and Connecting stages
+	 * (unless disabled with Stage::setParallelCompute()) runs on worker threads, while all changes of the
+	 * solution graph, as well as solution and task callbacks, remain on the thread calling plan().
+	 */
+	void setNumThreads(unsigned int num_threads);
+	/// number of threads as set by setNumThreads()
+	unsigned int numThreads() const;
 	/// interrupt current planning
 	void preempt();
 	void resetPreemptRequest();
@@ -171,6 +184,8 @@ private:
 	using WrapperBase::init;
 	/// planning loop computing the stages one after the other
 	moveit::core::MoveItErrorCode planSequential(size_t max_solutions);
+	/// planning loop dispatching compute stages as jobs to num_threads worker threads
+	moveit::core::MoveItErrorCode planParallel(size_t max_solutions, unsigned int num_threads);
 	// persistent node and client to call the ExecuteTaskSolution action and is only created if execute() is called
 	rclcpp::Node::SharedPtr execute_solution_node_;
 	std::shared_ptr<rclcpp_action::Client<moveit_task_constructor_msgs::action::ExecuteTaskSolution>> execute_ac_;
