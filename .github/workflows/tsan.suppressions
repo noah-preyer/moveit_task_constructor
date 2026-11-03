@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for the "tsan" CI job (see ci.yaml).
+# Only third-party libraries that are not built with -fsanitize=thread belong here.
+# Never suppress a frame in moveit::task_constructor: a report there is a bug in MTC.
+race:librcl*
+race:librmw*
+race:libfastrtps*
+race:librclcpp*

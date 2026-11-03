@@ -20,6 +20,14 @@ jobs:
       matrix:
         env:
           - IMAGE: humble-source
+          - IMAGE: humble-source
+            NAME: tsan
+            DOCKER_RUN_OPTS: -e TSAN_OPTIONS="suppressions=$PWD/.github/workflows/tsan.suppressions second_deadlock_stack=1"
+            TARGET_CMAKE_ARGS: -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=thread -O1 -g"
+
+    # The tsan job does not fail the workflow: uninstrumented ROS and MoveIt binaries produce third-party reports.
+    # Inspect its log for ThreadSanitizer warnings with a frame in moveit::task_constructor, those are bugs.
+    continue-on-error: ${{ matrix.env.NAME == 'tsan' }}
 
     env:
       CLANG_TIDY_ARGS: -quiet -export-fixes ${{ github.workspace }}/.work/clang-tidy-fixes.yaml
