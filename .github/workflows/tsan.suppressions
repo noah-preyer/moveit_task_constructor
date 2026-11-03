@@ -1,7 +1,15 @@
 # ThreadSanitizer suppressions for the "tsan" CI job (see ci.yaml).
-# Only third-party libraries that are not built with -fsanitize=thread belong here.
+# Only third-party libraries that are not built with -fsanitize=thread belong here, matched by library name.
 # Never suppress a frame in moveit::task_constructor: a report there is a bug in MTC.
-race:librcl*
-race:librmw*
+
+# FastDDS and the rmw layer run their own threads and never call into MTC: suppress their reports by any frame
 race:libfastrtps*
-race:librclcpp*
+race:librmw*
+deadlock:libfastrtps*
+mutex:libfastrtps*
+
+# rcl and rclcpp (librcl* includes librclcpp*) call MTC code, e.g. from executors: only suppress races in their top frame
+race_top:librcl*
+
+# spdlog, the logging backend of rcl, locks a destroyed mutex when shutting down
+mutex:libspdlog*

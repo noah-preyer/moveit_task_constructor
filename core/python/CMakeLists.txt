@@ -26,7 +26,8 @@ add_subdirectory(pybind11)
 # C++ wrapper code
 add_subdirectory(bindings)
 
-if(BUILD_TESTING AND NOT DEFINED ENV{PRELOAD})
+# Sanitized builds instrument the Python extension too, which cannot be loaded into the plain Python interpreter
+if(BUILD_TESTING AND NOT DEFINED ENV{PRELOAD} AND NOT (CMAKE_CXX_FLAGS MATCHES "-fsanitize"))
 	find_package(ament_cmake_pytest REQUIRED)
 	find_package(launch_testing_ament_cmake)
 	set(_pytest_tests test/test_mtc.py)
