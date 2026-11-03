@@ -52,12 +52,6 @@
 
 static auto LOGGER = rclcpp::get_logger("GenerateRandomPose");
 
-namespace {
-// TODO(henningkayser): support user-defined random number engines
-std::random_device RANDOM_DEVICE;
-std::mt19937 ENGINE(RANDOM_DEVICE());
-}  // namespace
-
 namespace moveit {
 namespace task_constructor {
 namespace stages {
@@ -72,18 +66,14 @@ GenerateRandomPose::GenerateRandomPose(const std::string& name) : GeneratePose(n
 template <>
 GenerateRandomPose::PoseDimensionSampler
 GenerateRandomPose::getPoseDimensionSampler<std::normal_distribution>(double stddev) {
-	return [stddev](double mean) {
-		static std::normal_distribution<double> dist(mean, stddev);
-		return dist(ENGINE);
-	};
+	return [this, stddev](double mean) { return std::normal_distribution<double>(mean, stddev)(engine_); };
 }
 
 template <>
 GenerateRandomPose::PoseDimensionSampler
 GenerateRandomPose::getPoseDimensionSampler<std::uniform_real_distribution>(double range) {
-	return [range](double mean) {
-		static std::uniform_real_distribution<double> dist(mean - 0.5 * range, mean + 0.5 * range);
-		return dist(ENGINE);
+	return [this, range](double mean) {
+		return std::uniform_real_distribution<double>(mean - 0.5 * range, mean + 0.5 * range)(engine_);
 	};
 }
 

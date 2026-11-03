@@ -91,7 +91,7 @@ public:
 	/** Limit the number of generated solutions */
 	void setMaxSolutions(size_t max_solutions) { setProperty("max_solutions", max_solutions); }
 
-private:
+protected:
 	/** Allocate the sampler function for the specified random distribution */
 	template <template <class Realtype = double> class RandomNumberDistribution>
 	PoseDimensionSampler getPoseDimensionSampler(double /* width */) {
@@ -99,6 +99,10 @@ private:
 		throw 0;  // suppress -Wreturn-type
 	}
 
+private:
+	// TODO(henningkayser): support user-defined random number engines
+	// Per-instance engine: sharing one between stages is a data race when stages compute on different threads.
+	std::mt19937 engine_{ std::random_device{}() };
 	std::vector<std::pair<PoseDimension, PoseDimensionSampler>> pose_dimension_samplers_;
 };
 template <>

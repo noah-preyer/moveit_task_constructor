@@ -55,6 +55,7 @@ if (BUILD_TESTING)
 	mtc_add_gmock(test_fallback.cpp)
 	mtc_add_gmock(test_cost_queue.cpp)
 	mtc_add_gmock(test_interface_state.cpp)
+	mtc_add_gtest(test_generate_random_pose.cpp)
 
 	mtc_add_gtest(test_move_to.cpp test.launch.py)
 	mtc_add_gtest(test_move_relative.cpp test.launch.py)
