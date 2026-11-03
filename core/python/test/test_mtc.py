@@ -371,6 +371,19 @@ class TestTask(BaseTestCases.ContainerTest):
         task.add(stages.Connect("connect", []))
         task.add(stages.FixedState())
 
+    def test_num_threads_property(self):
+        t = core.Task()
+        self.assertEqual(t.num_threads, 1)
+        t.num_threads = 0
+        self.assertEqual(t.num_threads, 0)
+        t.num_threads = 3
+        self.assertEqual(t.num_threads, 3)
+
+        s = stages.CurrentState()
+        self.assertTrue(s.parallel_compute)
+        s.parallel_compute = False
+        self.assertFalse(s.parallel_compute)
+
 
 if __name__ == "__main__":
     unittest.main()

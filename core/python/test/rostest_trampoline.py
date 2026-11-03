@@ -139,6 +139,27 @@ class TestTrampolines(unittest.TestCase):
         )
         self.plan(task, expected_solutions=1)
 
+    # Python-defined stages run on worker threads: they need the GIL, which plan() must release
+    @unittest.skipIf(len(pybind11_versions()) > 1, incompatible_pybind11_msg)
+    def test_parallel_monitoring_generator(self):
+        task = self.create(
+            stages.CurrentState("current"),
+            stages.Connect(planners=[(PLANNING_GROUP, self.jointspace)]),
+            PyMonitoringGenerator("generator"),
+        )
+        task["generator"].setMonitoredStage(task["current"])
+        task.num_threads = 4
+        self.plan(task, expected_solutions=PyMonitoringGenerator.solution_multiplier)
+
+    def test_parallel_propagator(self):
+        task = self.create(
+            PyMoveRelX(-0.2, self.cartesian),
+            stages.CurrentState(),
+            PyMoveRelX(+0.2, self.cartesian),
+        )
+        task.num_threads = 4
+        self.plan(task, expected_solutions=1)
+
 
 if __name__ == "__main__":
     unittest.main()

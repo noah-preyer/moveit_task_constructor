@@ -183,6 +183,8 @@ void export_core(pybind11::module& m) {
 	        .def_property("forwarded_properties", getForwardedProperties, setForwardedProperties,
 	                      "list: set of properties forwarded from input to output InterfaceState")
 	        .def_property("name", &Stage::name, &Stage::setName, "str: name of the stage displayed e.g. in rviz")
+	        .def_property("parallel_compute", &Stage::parallelCompute, &Stage::setParallelCompute,
+	                      "bool: allow compute() on a worker thread")
 	        .def_property_readonly("properties", py::overload_cast<>(&Stage::properties),
 	                               "PropertyMap: PropertyMap of the stage (read-only)")
 	        .def_property_readonly("solutions", &Stage::solutions, "Successful Solutions of the stage (read-only)")
@@ -413,6 +415,8 @@ void export_core(pybind11::module& m) {
 	    .def_property_readonly("solutions", &Task::solutions, "Successful Solutions of the stage (read-only)")
 	    .def_property_readonly("failures", &Task::failures, "Solutions: Failed Solutions of the stage (read-only)")
 	    .def_property("name", &Task::name, &Task::setName, "str: name of the task displayed e.g. in rviz")
+	    .def_property("num_threads", &Task::numThreads, &Task::setNumThreads,
+	                  "int: worker threads used by plan(); 1: sequential, 0: hardware concurrency")
 
 	    .def("loadRobotModel", &Task::loadRobotModel, "node"_a, "robot_description"_a = "robot_description",
 	         "Load robot model from given ROS parameter")
@@ -468,7 +472,7 @@ void export_core(pybind11::module& m) {
 	         "Access introspection object")
 	    .def("reset", &Task::reset, "Reset task (and all its stages)")
 	    .def("init", py::overload_cast<>(&Task::init), "Initialize the task (and all its stages)")
-	    .def("plan", &Task::plan, "max_solutions"_a = 0, R"(
+	    .def("plan", &Task::plan, py::call_guard<py::gil_scoped_release>(), "max_solutions"_a = 0, R"(
 			Reset, init, and plan. Planning is limited to ``max_allowed_solutions``.
 			Returns if planning was successful.)")
 	    .def("preempt", &Task::preempt, "Interrupt current planning (or execution)")
