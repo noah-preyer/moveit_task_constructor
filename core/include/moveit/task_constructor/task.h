@@ -169,6 +169,8 @@ protected:
 
 private:
 	using WrapperBase::init;
+	/// planning loop computing the stages one after the other
+	moveit::core::MoveItErrorCode planSequential(size_t max_solutions);
 	// persistent node and client to call the ExecuteTaskSolution action and is only created if execute() is called
 	rclcpp::Node::SharedPtr execute_solution_node_;
 	std::shared_ptr<rclcpp_action::Client<moveit_task_constructor_msgs::action::ExecuteTaskSolution>> execute_ac_;

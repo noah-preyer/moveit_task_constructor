@@ -50,6 +50,7 @@ if (BUILD_TESTING)
 	mtc_add_gtest(test_properties.cpp)
 	mtc_add_gtest(test_cost_terms.cpp)
 	mtc_add_gtest(test_job_scheduler.cpp)
+	mtc_add_gmock(test_parallel.cpp)
 
 	mtc_add_gmock(test_fallback.cpp)
 	mtc_add_gmock(test_cost_queue.cpp)
@@ -57,6 +58,19 @@ if (BUILD_TESTING)
 
 	mtc_add_gtest(test_move_to.cpp test.launch.py)
 	mtc_add_gtest(test_move_relative.cpp test.launch.py)
+
+	function(mtc_add_inline_test name)  # rerun an existing gtest binary with MTC_TEST_JOB_MODE=inline
+		set(target ${PROJECT_NAME}-${name})
+		set(result ${AMENT_TEST_RESULTS_DIR}/${PROJECT_NAME}/${target}-inline.gtest.xml)
+		ament_add_test(${target}-inline
+			COMMAND $<TARGET_FILE:${target}> --gtest_output=xml:${result}
+			OUTPUT_FILE ${CMAKE_BINARY_DIR}/ament_cmake_gtest/${target}-inline.txt
+			RESULT_FILE ${result}
+			ENV MTC_TEST_JOB_MODE=inline)
+	endfunction()
+	foreach(name test-container test-serial test-pruning test-fallback)
+		mtc_add_inline_test(${name})
+	endforeach()
 
 	# building these integration tests works without moveit config packages
 	ament_add_gtest_executable(pick_ur5 pick_ur5.cpp)

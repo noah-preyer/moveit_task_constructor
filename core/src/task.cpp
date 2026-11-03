@@ -38,6 +38,7 @@
 #include <moveit/task_constructor/container_p.h>
 #include <moveit/task_constructor/task_p.h>
 #include <moveit/task_constructor/introspection.h>
+#include <moveit/task_constructor/job_scheduler_p.h>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -83,6 +84,7 @@ TaskPrivate& TaskPrivate::operator=(TaskPrivate&& other) {
 	robot_model_ = std::move(other.robot_model_);
 	robot_model_loader_ = std::move(other.robot_model_loader_);
 	task_cbs_ = std::move(other.task_cbs_);
+	inline_jobs_ = other.inline_jobs_;
 	// Ensure same introspection status, but keep the existing introspection instance,
 	// which stores this task pointer and includes it in its task_id_
 	static_cast<Task*>(me_)->enableIntrospection(static_cast<bool>(other.introspection_));
@@ -91,6 +93,15 @@ TaskPrivate& TaskPrivate::operator=(TaskPrivate&& other) {
 
 const ContainerBase* TaskPrivate::stages() const {
 	return children().empty() ? nullptr : static_cast<ContainerBase*>(children().front().get());
+}
+
+void TaskPrivate::attachScheduler(JobScheduler* scheduler) {
+	traverseStages(
+	    [scheduler](Stage& stage, int /*depth*/) {
+		    stage.pimpl()->setScheduler(scheduler);
+		    return true;
+	    },
+	    1, UINT_MAX);
 }
 
 Task::Task(const std::string& ns, bool introspection, ContainerBase::pointer&& container)
@@ -247,6 +258,18 @@ moveit::core::MoveItErrorCode Task::plan(size_t max_solutions) {
 
 	auto impl = pimpl();
 	init();
+
+	if (impl->inline_jobs_) {
+		JobScheduler scheduler(0);  // no threads: jobs run synchronously inside submit()
+		impl->attachScheduler(&scheduler);
+		auto detach = sg::make_scope_guard([impl]() noexcept { impl->attachScheduler(nullptr); });
+		return planSequential(max_solutions);
+	}
+	return planSequential(max_solutions);
+}
+
+moveit::core::MoveItErrorCode Task::planSequential(size_t max_solutions) {
+	auto impl = pimpl();
 
 	// Print state and return success if there are solutions otherwise the input error_code
 	const auto success_or = [this](const int32_t error_code) -> int32_t {

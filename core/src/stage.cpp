@@ -38,6 +38,7 @@
 #include <moveit/task_constructor/stage_p.h>
 #include <moveit/task_constructor/container_p.h>
 #include <moveit/task_constructor/introspection.h>
+#include <moveit/task_constructor/job_scheduler_p.h>
 #include <moveit/task_constructor/fmt_p.h>
 
 #include <moveit/planning_scene/planning_scene.h>
@@ -120,6 +121,7 @@ StagePrivate& StagePrivate::operator=(StagePrivate&& other) {
 	properties_ = std::move(other.properties_);
 	cost_term_ = std::move(other.cost_term_);
 	solution_cbs_ = std::move(other.solution_cbs_);
+	parallel_compute_ = other.parallel_compute_;
 
 	starts_ = std::move(other.starts_);
 	ends_ = std::move(other.ends_);
@@ -176,11 +178,130 @@ bool StagePrivate::storeSolution(const SolutionBasePtr& solution, const Interfac
 	return true;
 }
 
+void StagePrivate::runCompute() {
+	RCLCPP_DEBUG_STREAM(LOGGER, fmt::format("Computing stage '{}'", name()));
+
+	if (preempted())
+		throw PreemptStageException();
+
+	if (scheduler_ && supportsJobs()) {
+		if (busy())
+			return;  // at most one job per stage
+		if (canCompute()) {
+			submitJob();
+			return;
+		}
+		// Otherwise compute() synchronously as before, e.g. if Alternatives or Merger compute an idle child
+	}
+
+	auto compute_start_time = std::chrono::steady_clock::now();
+	try {
+		compute();
+	} catch (const Property::error& e) {
+		me()->reportPropertyError(e);
+	}
+	auto compute_stop_time = std::chrono::steady_clock::now();
+	total_compute_time_ += compute_stop_time - compute_start_time;
+}
+
+void StagePrivate::submitJob() {
+	Job job;
+	job.owner = this;
+	try {
+		job.work = prepareJob();
+	} catch (const Property::error& e) {  // from performInitFrom(), which runCompute() would report as well
+		me()->reportPropertyError(e);
+	}
+	job.resources = exclusiveResources();
+	job.complete = [this](Job& finished) { onJobFinished(finished); };
+	job.cancel = [this](Job& cancelled) { onJobCancelled(cancelled); };
+
+	addInflight(+1);
+	scheduler_->submit(std::move(job));
+}
+
+void StagePrivate::onJobFinished(Job& job) {
+	addInflight(-1);
+	addComputeTime(job.duration);
+	deliverDeferredNotifications();
+
+	try {
+		for (auto& commit : job.commits)
+			commit();
+	} catch (const Property::error& e) {  // as runCompute() reports errors raised by synchronous commits
+		me()->reportPropertyError(e);
+	}
+
+	if (!job.error)
+		return;
+	try {
+		std::rethrow_exception(job.error);
+	} catch (const Property::error& e) {
+		// replace the error with the explanation that runCompute() would have thrown
+		try {
+			me()->reportPropertyError(e);
+		} catch (...) {
+			job.error = std::current_exception();
+		}
+	} catch (...) {
+		// keep all other errors as they are
+	}
+}
+
+void StagePrivate::onJobCancelled(Job& /*job*/) {
+	// the prepared input and the job's results (if any) are dropped
+	addInflight(-1);
+	deliverDeferredNotifications();
+}
+
+void StagePrivate::deferWhileBusy(std::function<void()>&& notification) {
+	if (scheduler_ && busy())
+		deferred_notifications_.push_back(std::move(notification));
+	else
+		notification();
+}
+
+void StagePrivate::deliverDeferredNotifications() {
+	while (!deferred_notifications_.empty()) {
+		auto notification = std::move(deferred_notifications_.front());
+		deferred_notifications_.pop_front();
+		notification();
+	}
+}
+
+void StagePrivate::addInflight(int delta) {
+	for (StagePrivate* stage = this; stage; stage = stage->parent() ? stage->parent()->pimpl() : nullptr) {
+		assert(delta >= 0 || stage->inflight_ >= static_cast<unsigned int>(-delta));
+		stage->inflight_ += delta;
+	}
+}
+
+void StagePrivate::addComputeTime(std::chrono::duration<double> duration) {
+	for (StagePrivate* stage = this; stage; stage = stage->parent() ? stage->parent()->pimpl() : nullptr)
+		stage->total_compute_time_ += duration;
+}
+
+void StagePrivate::commitOrDefer(std::function<void()>&& commit) {
+	Job* job = Job::current();
+	// a job must only change the solution graph through its own stage
+	assert(!job || job->owner == this);
+	if (job && job->owner == this)
+		job->defer(std::move(commit));
+	else
+		commit();
+}
+
 void StagePrivate::sendForward(const InterfaceState& from, InterfaceState&& to, const SolutionBasePtr& solution) {
 	assert(nextStarts());
 
 	computeCost(from, to, *solution);
 
+	commitOrDefer([this, from_ptr = &from, to = std::move(to), solution]() mutable {
+		commitForward(*from_ptr, std::move(to), solution);
+	});
+}
+
+void StagePrivate::commitForward(const InterfaceState& from, InterfaceState&& to, const SolutionBasePtr& solution) {
 	if (!storeSolution(solution, &from, nullptr))
 		return;  // solution dropped
 
@@ -203,6 +324,12 @@ void StagePrivate::sendBackward(InterfaceState&& from, const InterfaceState& to,
 
 	computeCost(from, to, *solution);
 
+	commitOrDefer([this, from = std::move(from), to_ptr = &to, solution]() mutable {
+		commitBackward(std::move(from), *to_ptr, solution);
+	});
+}
+
+void StagePrivate::commitBackward(InterfaceState&& from, const InterfaceState& to, const SolutionBasePtr& solution) {
 	if (!storeSolution(solution, nullptr, &to))
 		return;  // solution dropped
 
@@ -224,6 +351,12 @@ void StagePrivate::spawn(InterfaceState&& from, InterfaceState&& to, const Solut
 
 	computeCost(from, to, *solution);
 
+	commitOrDefer([this, from = std::move(from), to = std::move(to), solution]() mutable {
+		commitSpawn(std::move(from), std::move(to), solution);
+	});
+}
+
+void StagePrivate::commitSpawn(InterfaceState&& from, InterfaceState&& to, const SolutionBasePtr& solution) {
 	if (!storeSolution(solution, nullptr, nullptr))
 		return;  // solution dropped
 
@@ -248,6 +381,11 @@ void StagePrivate::spawn(InterfaceState&& state, const SolutionBasePtr& solution
 void StagePrivate::connect(const InterfaceState& from, const InterfaceState& to, const SolutionBasePtr& solution) {
 	computeCost(from, to, *solution);
 
+	commitOrDefer([this, from_ptr = &from, to_ptr = &to, solution] { commitConnect(*from_ptr, *to_ptr, solution); });
+}
+
+void StagePrivate::commitConnect(const InterfaceState& from, const InterfaceState& to,
+                                 const SolutionBasePtr& solution) {
 	if (!storeSolution(solution, &from, &to))
 		return;  // solution dropped
 
@@ -349,6 +487,9 @@ void Stage::reset() {
 	// reset inherited properties
 	impl->properties_.reset();
 	impl->total_compute_time_ = std::chrono::duration<double>::zero();
+	// forget about jobs (and their pending notifications)
+	impl->deferred_notifications_.clear();
+	impl->inflight_ = 0;
 }
 
 void Stage::init(const moveit::core::RobotModelConstPtr& /* robot_model */) {
@@ -430,7 +571,8 @@ size_t Stage::numFailures() const {
 }
 
 void Stage::silentFailure() {
-	++(pimpl()->num_failures_);
+	auto impl = pimpl();
+	impl->commitOrDefer([impl] { ++(impl->num_failures_); });
 }
 
 bool Stage::storeFailures() const {
@@ -447,6 +589,14 @@ void Stage::setProperty(const std::string& name, const boost::any& value) {
 
 double Stage::getTotalComputeTime() const {
 	return pimpl()->total_compute_time_.count();
+}
+
+void Stage::setParallelCompute(bool enable) {
+	pimpl()->parallel_compute_ = enable;
+}
+
+bool Stage::parallelCompute() const {
+	return pimpl()->parallel_compute_;
 }
 
 void StagePrivate::composePropertyErrorMsg(const std::string& property_name, std::ostream& os) {
@@ -579,7 +729,7 @@ const InterfaceState& PropagatingEitherWayPrivate::fetchEndState() {
 }
 
 bool PropagatingEitherWayPrivate::canCompute() const {
-	return hasStartState() || hasEndState();
+	return !busy() && (hasStartState() || hasEndState());
 }
 
 void PropagatingEitherWayPrivate::compute() {
@@ -597,6 +747,23 @@ void PropagatingEitherWayPrivate::compute() {
 		properties_.performInitFrom(Stage::INTERFACE, state.properties());
 		me->computeBackward(state);
 	}
+}
+
+std::function<void()> PropagatingEitherWayPrivate::prepareJob() {
+	PropagatingEitherWay* me = static_cast<PropagatingEitherWay*>(me_);
+
+	// After resolveInterface(), there is only one pull interface. As compute(), process one state of it.
+	if (hasStartState()) {
+		const InterfaceState& state = fetchStartState();
+		// enforce property initialization from INTERFACE
+		properties_.performInitFrom(Stage::INTERFACE, state.properties());
+		return [me, state_ptr = &state] { me->computeForward(*state_ptr); };
+	}
+	assert(hasEndState());
+	const InterfaceState& state = fetchEndState();
+	// enforce property initialization from INTERFACE
+	properties_.performInitFrom(Stage::INTERFACE, state.properties());
+	return [me, state_ptr = &state] { me->computeBackward(*state_ptr); };
 }
 
 PropagatingEitherWay::PropagatingEitherWay(const std::string& name)
@@ -676,11 +843,16 @@ InterfaceFlags GeneratorPrivate::requiredInterface() const {
 }
 
 bool GeneratorPrivate::canCompute() const {
-	return static_cast<Generator*>(me_)->canCompute();
+	return !busy() && static_cast<Generator*>(me_)->canCompute();
 }
 
 void GeneratorPrivate::compute() {
 	static_cast<Generator*>(me_)->compute();
+}
+
+std::function<void()> GeneratorPrivate::prepareJob() {
+	Generator* me = static_cast<Generator*>(me_);
+	return [me] { me->compute(); };
 }
 
 Generator::Generator(GeneratorPrivate* impl) : ComputeBase(impl) {}
@@ -729,9 +901,9 @@ void MonitoringGenerator::init(const moveit::core::RobotModelConstPtr& robot_mod
 }
 
 void MonitoringGeneratorPrivate::solutionCB(const SolutionBase& s) {
-	// forward only successful solutions to monitor
+	// forward only successful solutions to monitor - delayed while our own compute() runs as a job
 	if (!s.isFailure())
-		static_cast<MonitoringGenerator*>(me())->onNewSolution(s);
+		deferWhileBusy([this, &s] { static_cast<MonitoringGenerator*>(me())->onNewSolution(s); });
 }
 
 ConnectingPrivate::ConnectingPrivate(Connecting* me, const std::string& name) : ComputeBasePrivate(me, name) {
@@ -870,6 +1042,8 @@ template bool ConnectingPrivate::hasPendingOpposites<Interface::BACKWARD>(const 
 
 bool ConnectingPrivate::canCompute() const {
 	// ROS_DEBUG_STREAM("canCompute " << name() << ": " << pendingPairsPrinter());
+	if (busy())
+		return false;
 	// Do we still have feasible pending state pairs?
 	return !pending.empty() && pending.front().first->priority().enabled() &&
 	       pending.front().second->priority().enabled();
@@ -881,6 +1055,15 @@ void ConnectingPrivate::compute() {
 	const InterfaceState& to = *top.second;
 	assert(from.priority().enabled() && to.priority().enabled());
 	static_cast<Connecting*>(me_)->compute(from, to);
+}
+
+std::function<void()> ConnectingPrivate::prepareJob() {
+	const StatePair top = pending.pop();
+	const InterfaceState* from = &*top.first;
+	const InterfaceState* to = &*top.second;
+	assert(from->priority().enabled() && to->priority().enabled());
+	Connecting* me = static_cast<Connecting*>(me_);
+	return [me, from, to] { me->compute(*from, *to); };
 }
 
 std::ostream& operator<<(std::ostream& os, const PendingPairsPrinter& p) {

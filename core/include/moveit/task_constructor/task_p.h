@@ -48,6 +48,7 @@ MOVEIT_CLASS_FORWARD(RobotModelLoader);
 namespace moveit {
 namespace task_constructor {
 
+class JobScheduler;
 class TaskPrivate : public WrapperBasePrivate
 {
 	friend class Task;
@@ -59,11 +60,17 @@ public:
 	const std::string& ns() const { return ns_; }
 	const ContainerBase* stages() const;
 
+	/// test hook: let plan() compute stages via the job path, using an inline JobScheduler(0)
+	void setInlineJobs(bool enable) { inline_jobs_ = enable; }
+	/// attach scheduler to all stages (nullptr detaches it)
+	void attachScheduler(JobScheduler* scheduler);
+
 private:
 	std::string ns_;
 	robot_model_loader::RobotModelLoaderPtr robot_model_loader_;
 	moveit::core::RobotModelConstPtr robot_model_;
 	std::atomic<bool> preempt_requested_;
+	bool inline_jobs_ = false;
 
 	// introspection and monitoring
 	std::unique_ptr<Introspection> introspection_;

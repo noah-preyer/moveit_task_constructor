@@ -257,6 +257,14 @@ public:
 
 	double getTotalComputeTime() const;
 
+	/** Allow running compute() of this stage on a worker thread, concurrently to other stages (default: true)
+	 *
+	 * Only compute stages (Generator, Propagating*, Connecting) honor this setting.
+	 * Disable it if the stage's compute() is not thread-safe.
+	 */
+	void setParallelCompute(bool enable);
+	bool parallelCompute() const;
+
 protected:
 	/// Stage can only be instantiated through derived classes
 	Stage(StagePrivate* impl);

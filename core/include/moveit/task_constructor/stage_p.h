@@ -48,6 +48,9 @@
 
 #include <ostream>
 #include <chrono>
+#include <deque>
+#include <functional>
+#include <vector>
 
 // define pimpl() functions accessing correctly casted pimpl_ pointer
 #define PIMPL_FUNCTIONS(Class)                           \
@@ -69,6 +72,8 @@ public:
 };
 
 class ContainerBase;
+class JobScheduler;
+struct Job;
 class StagePrivate
 {
 	friend class Stage;
@@ -155,21 +160,29 @@ public:
 	bool storeSolution(const SolutionBasePtr& solution, const InterfaceState* from, const InterfaceState* to);
 	void newSolution(const SolutionBasePtr& solution);
 	bool storeFailures() const { return introspection_ != nullptr; }
-	void runCompute() {
-		RCLCPP_DEBUG_STREAM(LOGGER, fmt::format("Computing stage '{}'", name()));
 
-		if (preempted())
-			throw PreemptStageException();
+	/** compute() the stage, measuring its compute time
+	 *
+	 * If a JobScheduler is attached and the stage supportsJobs(), the stage doesn't compute directly:
+	 * While busy(), nothing happens. Otherwise, if the stage canCompute(), one job is prepared and submitted.
+	 * Only if the stage cannot compute, compute() is still called synchronously.
+	 */
+	void runCompute();
 
-		auto compute_start_time = std::chrono::steady_clock::now();
-		try {
-			compute();
-		} catch (const Property::error& e) {
-			me()->reportPropertyError(e);
-		}
-		auto compute_stop_time = std::chrono::steady_clock::now();
-		total_compute_time_ += compute_stop_time - compute_start_time;
-	}
+	/// attach the JobScheduler that runCompute() submits jobs to (nullptr: compute synchronously)
+	void setScheduler(JobScheduler* scheduler) { scheduler_ = scheduler; }
+	/// is a job of this stage or of any of its descendants in flight?
+	bool busy() const { return inflight_ > 0; }
+	/// can compute() run as a job, i.e. split into prepareJob() and the returned work?
+	virtual bool supportsJobs() const { return false; }
+	/** On the planning thread, take the input of one compute() call from the interfaces
+	 *  and return the work running compute() for it (possibly on a worker thread).
+	 *  Only called when supportsJobs() && canCompute(). */
+	virtual std::function<void()> prepareJob() { return {}; }
+	/// resources that must not be used by another job while this stage's job runs
+	virtual std::vector<const void*> exclusiveResources() const { return {}; }
+	/// call notification now, or queue it until the in-flight job of this stage finished
+	void deferWhileBusy(std::function<void()>&& notification);
 
 	/** compute cost for solution through configured CostTerm */
 	void computeCost(const InterfaceState& from, const InterfaceState& to, SolutionBase& solution);
@@ -206,7 +219,27 @@ protected:
 	std::list<SolutionBaseConstPtr> failures_;
 	std::size_t num_failures_ = 0;  // num of failures if not stored
 
+	// allow running compute() as a job (only honored by compute stages, see supportsJobs())
+	bool parallel_compute_ = true;
+
 private:
+	// job handling, see runCompute()
+	void submitJob();
+	void onJobFinished(Job& job);
+	void onJobCancelled(Job& job);
+	void deliverDeferredNotifications();
+	// account for a job in flight / its compute time in this stage and all its ancestors
+	void addInflight(int delta);
+	void addComputeTime(std::chrono::duration<double> duration);
+
+	// Apply a change of the solution graph now - or, if called from this stage's job, record it for replay
+	// on the planning thread when the job finished. The commit*() functions perform the changes of send*/spawn/connect.
+	void commitOrDefer(std::function<void()>&& commit);
+	void commitForward(const InterfaceState& from, InterfaceState&& to, const SolutionBasePtr& solution);
+	void commitBackward(InterfaceState&& from, const InterfaceState& to, const SolutionBasePtr& solution);
+	void commitSpawn(InterfaceState&& from, InterfaceState&& to, const SolutionBasePtr& solution);
+	void commitConnect(const InterfaceState& from, const InterfaceState& to, const SolutionBasePtr& solution);
+
 	// !! items write-accessed only by ContainerBasePrivate to maintain hierarchy !!
 	ContainerBase* parent_;  // owning parent
 	container_type::iterator it_;  // iterator into parent's children_ list referring to this
@@ -218,6 +251,10 @@ private:
 
 	Introspection* introspection_;  // task's introspection instance
 	const std::atomic<bool>* preempt_requested_;
+
+	JobScheduler* scheduler_ = nullptr;  // scheduler for jobs, attached by the task during planning
+	unsigned int inflight_ = 0;  // number of jobs in flight in this stage and its descendants
+	std::deque<std::function<void()>> deferred_notifications_;  // notifications that arrived while busy()
 
 	inline static const rclcpp::Logger LOGGER = rclcpp::get_logger("stage");
 };
@@ -253,6 +290,8 @@ class ComputeBasePrivate : public StagePrivate
 public:
 	ComputeBasePrivate(Stage* me, const std::string& name) : StagePrivate(me, name) {}
 
+	bool supportsJobs() const override { return parallel_compute_; }
+
 private:
 };
 PIMPL_FUNCTIONS(ComputeBase)
@@ -276,6 +315,7 @@ public:
 
 	bool canCompute() const override;
 	void compute() override;
+	std::function<void()> prepareJob() override;
 
 	bool hasStartState() const;
 	const InterfaceState& fetchStartState();
@@ -307,6 +347,7 @@ public:
 	InterfaceFlags requiredInterface() const override;
 	bool canCompute() const override;
 	void compute() override;
+	std::function<void()> prepareJob() override;
 };
 PIMPL_FUNCTIONS(Generator)
 
@@ -367,6 +408,7 @@ public:
 	InterfaceFlags requiredInterface() const override;
 	bool canCompute() const override;
 	void compute() override;
+	std::function<void()> prepareJob() override;
 
 	// Check whether there are pending feasible states that could connect to source
 	template <Interface::Direction dir>

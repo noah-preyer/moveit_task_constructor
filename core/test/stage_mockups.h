@@ -1,6 +1,7 @@
 #pragma once
 
 #include <moveit/task_constructor/task.h>
+#include <moveit/task_constructor/task_p.h>
 #include <moveit/task_constructor/cost_terms.h>
 
 #include <moveit/planning_scene/planning_scene.h>
@@ -8,6 +9,9 @@
 #include "models.h"
 
 #include <atomic>
+#include <cstdlib>
+#include <functional>
+#include <string>
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -55,6 +59,7 @@ struct GeneratorMockup : public Generator
 	PredefinedCosts costs_;
 	size_t runs_{ 0 };
 	std::size_t solutions_per_compute_;
+	std::function<void()> on_compute;  // called first thing in compute()
 
 	static unsigned int id_;
 
@@ -91,6 +96,7 @@ struct ConnectMockup : public Connecting
 {
 	PredefinedCosts costs_;
 	size_t runs_{ 0 };
+	std::function<void()> on_compute;  // called first thing in compute()
 
 	static unsigned int id_;
 
@@ -109,6 +115,7 @@ struct PropagatorMockup : public PropagatingEitherWay
 	PredefinedCosts costs_;
 	size_t runs_{ 0 };
 	std::size_t solutions_per_compute_;
+	std::function<void()> on_compute;  // called first thing in computeForward() / computeBackward()
 
 	static unsigned int id_;
 
@@ -149,6 +156,10 @@ struct TaskTestBase : public testing::Test
 	TaskTestBase() {
 		resetMockupIds();
 		t.setRobotModel(getModel());
+		// MTC_TEST_JOB_MODE=inline reruns a test suite with the compute stages running as (inline) jobs
+		const char* job_mode = std::getenv("MTC_TEST_JOB_MODE");
+		if (job_mode && std::string(job_mode) == "inline")
+			t.pimpl()->setInlineJobs(true);
 	}
 
 	template <typename C, typename S>

@@ -86,6 +86,8 @@ bool GeneratorMockup::canCompute() const {
 }
 
 void GeneratorMockup::compute() {
+	if (on_compute)
+		on_compute();
 	++runs_;
 
 	for (std::size_t i = 0; canCompute() && i < solutions_per_compute_; ++i)
@@ -105,6 +107,8 @@ ConnectMockup::ConnectMockup(PredefinedCosts&& costs)
   : Connecting{ "CON" + std::to_string(++id_) }, costs_{ std::move(costs) } {}
 
 void ConnectMockup::compute(const InterfaceState& from, const InterfaceState& to) {
+	if (on_compute)
+		on_compute();
 	++runs_;
 
 	auto solution{ std::make_shared<SubTrajectory>() };
@@ -119,6 +123,8 @@ PropagatorMockup::PropagatorMockup(PredefinedCosts&& costs, std::size_t solution
   , solutions_per_compute_{ solutions_per_compute } {}
 
 void PropagatorMockup::computeForward(const InterfaceState& from) {
+	if (on_compute)
+		on_compute();
 	++runs_;
 
 	for (std::size_t i = 0; i < solutions_per_compute_; ++i) {
@@ -128,6 +134,8 @@ void PropagatorMockup::computeForward(const InterfaceState& from) {
 }
 
 void PropagatorMockup::computeBackward(const InterfaceState& to) {
+	if (on_compute)
+		on_compute();
 	++runs_;
 
 	for (std::size_t i = 0; i < solutions_per_compute_; ++i) {
