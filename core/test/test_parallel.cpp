@@ -478,6 +478,134 @@ TEST_F(ExclusiveResources, ClearedOnReinit) {
 	EXPECT_THAT(fwd->pimpl()->exclusiveResources(), IsEmpty());
 }
 
+// When plan() stops early, the inputs of jobs that did not get committed are put back: a later plan() continues
+// where the previous one stopped and finds the same solutions as sequential planning.
+struct ResumePlanning : TaskTestBase
+{
+	ResumePlanning() { t.setNumThreads(4); }
+};
+
+namespace {
+// GEN{0} → Alternatives{3 × FWD c1}: the FWDs share an exclusive resource,
+// so while one of them computes, the jobs of the others are queued
+// (The FWDs have equal costs: a resumed plan() changing the priority of the state, which Alternatives received in the
+// previous plan(), would crash - also with sequential planning - as Task::init() replaces the container's interfaces.)
+std::vector<ForwardMockup*> buildQueuedPropagators(Task& task, const void* resource) {
+	std::vector<ForwardMockup*> fwds;
+	task.add(Stage::pointer(new GeneratorMockup({ 0 })));
+	auto alternatives = std::make_unique<Alternatives>();
+	for (int i = 0; i < 3; ++i) {
+		auto fwd = withWork(new ForwardMockup(PredefinedCosts::constant(1.0)), 50ms);
+		fwd->resource = resource;
+		alternatives->add(Stage::pointer(fwd));
+		fwds.push_back(fwd);
+	}
+	task.add(std::move(alternatives));
+	return fwds;
+}
+
+// GEN{0,0} → CON c1 → GEN{0} → CON c1 → GEN{0}: the CONs share an exclusive resource,
+// so while one of them computes, the job of the other one is queued
+std::vector<ConnectMockup*> buildQueuedConnectors(Task& task, const void* resource) {
+	std::vector<ConnectMockup*> cons;
+	task.add(Stage::pointer(new GeneratorMockup({ 0, 0 })));
+	for (int i = 0; i < 2; ++i) {
+		auto con = withWork(new ConnectMockup(PredefinedCosts::constant(1.0)), 50ms);
+		con->resource = resource;
+		task.add(Stage::pointer(con));
+		cons.push_back(con);
+		task.add(Stage::pointer(new GeneratorMockup({ 0 })));
+	}
+	return cons;
+}
+
+template <typename S>
+std::size_t totalRuns(const std::vector<S*>& stages) {
+	std::size_t runs = 0;
+	for (const S* stage : stages)
+		runs += stage->runs_;
+	return runs;
+}
+
+// number of solutions found by sequential planning, stopped by plan(1) and resumed by plan()
+template <typename Build>
+std::size_t numSolutionsOfSequentialResume(Build build) {
+	int resource;
+	Task task;
+	setup(task, 1);
+	build(task, &resource);
+	EXPECT_TRUE(task.plan(1));
+	EXPECT_TRUE(task.plan());
+	return task.numSolutions();
+}
+}  // namespace
+
+TEST_F(ResumePlanning, PropagatorInputsOfCancelledJobsArePutBack) {
+	int r;
+	const auto fwds = buildQueuedPropagators(t, &r);
+
+	EXPECT_TRUE(t.plan(1));  // stops after the first job: queued jobs get cancelled
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(1, 1, 1));
+	EXPECT_EQ(totalRuns(fwds), 3u);  // each input was computed exactly once
+	EXPECT_EQ(t.numSolutions(), numSolutionsOfSequentialResume(buildQueuedPropagators));
+}
+
+TEST_F(ResumePlanning, ConnectorPairsOfCancelledJobsArePutBack) {
+	int r;
+	const auto cons = buildQueuedConnectors(t, &r);
+	// preempt as soon as both CONs have a job: one of them runs, the other one is queued (and gets cancelled)
+	bool preempted = false;
+	t.addTaskCallback([this, &cons, &preempted](const Task& /*task*/) {
+		if (!preempted && cons[0]->pimpl()->busy() && cons[1]->pimpl()->busy()) {
+			preempted = true;
+			t.preempt();
+		}
+	});
+
+	EXPECT_EQ(t.plan().val, MoveItErrorCode::PREEMPTED);
+	ASSERT_TRUE(preempted);
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(2, 2));
+	EXPECT_EQ(totalRuns(cons), 3u);  // each pair was computed exactly once
+	EXPECT_EQ(t.numSolutions(), numSolutionsOfSequentialResume(buildQueuedConnectors));
+}
+
+// An exception thrown on the planning thread (here by a solution callback) aborts planning: plan() throws once
+// the running jobs finished, their results are discarded and their inputs put back for a later plan().
+TEST_F(ResumePlanning, AbortedJobsPutTheirInputsBack) {
+	// GEN{0,0} → FWD1 c1 → FWD2 c2: FWD1 computes its 2nd state while FWD2 completes the first solution
+	add(t, new GeneratorMockup({ 0, 0 }));
+	auto fwd1 = add(t, new ForwardMockup(PredefinedCosts::constant(1.0)));
+	auto fwd2 = add(t, withWork(new ForwardMockup(PredefinedCosts::constant(2.0)), 10ms));
+	std::atomic<bool> slow_finished{ false };
+	fwd1->on_compute = [fwd1, &slow_finished] {
+		if (fwd1->runs_ != 1) {  // 1st and 3rd run
+			std::this_thread::sleep_for(10ms);
+			return;
+		}
+		std::this_thread::sleep_for(200ms);
+		slow_finished = true;
+	};
+	bool thrown = false;
+	t.addSolutionCallback([&thrown](const SolutionBase& /*s*/) {
+		if (!thrown) {
+			thrown = true;
+			throw std::runtime_error("callback failed");
+		}
+	});
+
+	EXPECT_THROW(t.plan(), std::runtime_error);  // thrown when the first solution reaches the task
+	EXPECT_TRUE(slow_finished);  // plan() returned only after the running job finished
+	EXPECT_FALSE(t.stages()->pimpl()->busy());
+	EXPECT_COSTS(t.solutions(), ElementsAre(3));  // the result of FWD1's slow job was discarded
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(3, 3));
+	EXPECT_EQ(fwd1->runs_, 3u);  // the input of the discarded job was computed again
+	EXPECT_EQ(fwd2->runs_, 2u);
+}
+
 namespace {
 // planner without any functionality, relying on the default exclusiveResources()
 struct StubPlanner : solvers::PlannerInterface

@@ -121,6 +121,7 @@ struct ConnectMockup : public Connecting
 	PredefinedCosts costs_;
 	size_t runs_{ 0 };
 	std::function<void()> on_compute;  // called first thing in compute()
+	const void* resource = nullptr;  // exclusive resource to register in init() (if set)
 
 	static unsigned int id_;
 
@@ -130,6 +131,7 @@ struct ConnectMockup : public Connecting
 
 	using Connecting::compatible;  // make this accessible for testing
 
+	void init(const moveit::core::RobotModelConstPtr& robot_model) override;
 	void compute(const InterfaceState& from, const InterfaceState& to) override;
 	void reset() override { runs_ = 0; };
 };

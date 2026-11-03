@@ -142,6 +142,15 @@ Interface::container_type Interface::remove(iterator it) {
 	return result;
 }
 
+void Interface::reinsert(container_type&& removed) {
+	while (!removed.empty()) {
+		InterfaceState* state = removed.front();
+		assert(state->owner_ == nullptr);  // the state must not be part of an interface anymore
+		state->owner_ = this;
+		moveFrom(removed.begin(), removed);  // keeping the current priority
+	}
+}
+
 void Interface::updatePriority(InterfaceState* state, const InterfaceState::Priority& priority) {
 	const auto old_prio = state->priority();
 	if (priority == old_prio)

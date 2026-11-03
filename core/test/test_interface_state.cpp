@@ -72,6 +72,36 @@ TEST(Interface, update) {
 	EXPECT_THAT(i.depths(), ::testing::ElementsAreArray({ 3, 6 }));
 }
 
+TEST(Interface, reinsertKeepsPriorityWithoutNotify) {
+	auto ps = std::make_shared<planning_scene::PlanningScene>(getModel());
+	unsigned int notified = 0;
+	StoringInterface i([&notified](Interface::iterator /*it*/, Interface::UpdateFlags /*updated*/) { ++notified; });
+	i.add(InterfaceState(ps, Prio(1, 0.0)));
+	i.add(InterfaceState(ps, Prio(3, 0.0)));
+	i.add(InterfaceState(ps, Prio(2, 0.0)));
+	EXPECT_THAT(i.depths(), ::testing::ElementsAreArray({ 3, 2, 1 }));
+	notified = 0;
+
+	Interface::container_type removed = i.remove(i.begin());
+	InterfaceState* state = removed.front();
+	EXPECT_EQ(state->owner(), nullptr);
+	EXPECT_THAT(i.depths(), ::testing::ElementsAreArray({ 2, 1 }));
+
+	// while removed, the priority changes without involving the interface
+	state->updatePriority(Prio(1, 5.0));
+	i.reinsert(std::move(removed));
+	EXPECT_EQ(state->owner(), &i);
+	EXPECT_EQ(state->priority(), Prio(1, 5.0));
+	EXPECT_THAT(i.depths(), ::testing::ElementsAreArray({ 2, 1, 1 }));
+	EXPECT_EQ(*std::prev(i.end()), state);  // sorted behind the state of depth 1, which has a lower cost
+	EXPECT_EQ(notified, 0u);  // the state is not new
+
+	// the interface manages the state again
+	i.updatePriority(state, Prio(4, 0.0));
+	EXPECT_THAT(i.depths(), ::testing::ElementsAreArray({ 4, 2, 1 }));
+	EXPECT_EQ(notified, 1u);
+}
+
 using PrioPair = std::pair<Prio, Prio>;
 inline bool operator<(const PrioPair& lhs, const PrioPair& rhs) {
 	return ConnectingPrivate::StatePair::less(lhs.first, lhs.second, rhs.first, rhs.second);

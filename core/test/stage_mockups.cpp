@@ -134,6 +134,12 @@ void QueueingMonitoringGeneratorMockup::compute() {
 ConnectMockup::ConnectMockup(PredefinedCosts&& costs)
   : Connecting{ "CON" + std::to_string(++id_) }, costs_{ std::move(costs) } {}
 
+void ConnectMockup::init(const moveit::core::RobotModelConstPtr& robot_model) {
+	Connecting::init(robot_model);
+	if (resource)
+		addExclusiveResource(resource);
+}
+
 void ConnectMockup::compute(const InterfaceState& from, const InterfaceState& to) {
 	if (on_compute)
 		on_compute();

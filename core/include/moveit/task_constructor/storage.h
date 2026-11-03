@@ -231,6 +231,14 @@ public:
 	/// remove a state from the interface and return it as a one-element list
 	container_type remove(iterator it);
 
+	/** Put states back that were taken out with remove(), passing the list remove() returned.
+	 *
+	 *  As add(), this inserts the states sorted by priority. But in contrast to add(), the states keep their
+	 *  current priority (which might have changed meanwhile), and the notify function is not called:
+	 *  the states are not new to the interface.
+	 */
+	void reinsert(container_type&& removed);
+
 	/// update state's priority (and call notify_ if it really has changed)
 	void updatePriority(InterfaceState* state, const InterfaceState::Priority& priority);
 	inline bool notifyEnabled() const { return static_cast<bool>(notify_); }

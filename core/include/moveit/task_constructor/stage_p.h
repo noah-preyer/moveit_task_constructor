@@ -178,6 +178,7 @@ public:
 	virtual bool supportsJobs() const { return false; }
 	/** On the planning thread, take the input of one compute() call from the interfaces
 	 *  and return the work running compute() for it (possibly on a worker thread).
+	 *  If an input was taken, set restore_job_input_ to put it back in case the job gets cancelled.
 	 *  Only called when supportsJobs() && canCompute(). */
 	virtual std::function<void()> prepareJob() { return {}; }
 	/// resources that must not be used by another job while this stage's job runs
@@ -222,6 +223,9 @@ protected:
 
 	// allow running compute() as a job (only honored by compute stages, see supportsJobs())
 	bool parallel_compute_ = true;
+
+	// set by prepareJob(): puts the input of the in-flight job back if the job is cancelled (see onJobCancelled())
+	std::function<void()> restore_job_input_;
 
 private:
 	// job handling, see runCompute()

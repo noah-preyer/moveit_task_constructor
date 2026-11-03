@@ -205,6 +205,7 @@ void StagePrivate::runCompute() {
 }
 
 void StagePrivate::submitJob() {
+	assert(!restore_job_input_);  // at most one job per stage
 	Job job;
 	job.owner = this;
 	try {
@@ -221,6 +222,7 @@ void StagePrivate::submitJob() {
 }
 
 void StagePrivate::onJobFinished(Job& job) {
+	restore_job_input_ = nullptr;  // the job consumed its input
 	addInflight(-1);
 	addComputeTime(job.duration);
 	deliverDeferredNotifications();
@@ -249,8 +251,12 @@ void StagePrivate::onJobFinished(Job& job) {
 }
 
 void StagePrivate::onJobCancelled(Job& /*job*/) {
-	// the prepared input and the job's results (if any) are dropped
+	// The job's results (if any) are dropped, but its input is put back, such that a later plan() computes it.
+	std::function<void()> restore_input;
+	restore_input.swap(restore_job_input_);
 	addInflight(-1);
+	if (restore_input)
+		restore_input();
 	deliverDeferredNotifications();
 }
 
@@ -489,6 +495,7 @@ void Stage::reset() {
 	impl->total_compute_time_ = std::chrono::duration<double>::zero();
 	// forget about jobs (and their pending notifications)
 	impl->deferred_notifications_.clear();
+	impl->restore_job_input_ = nullptr;
 	impl->inflight_ = 0;
 }
 
@@ -763,17 +770,19 @@ std::function<void()> PropagatingEitherWayPrivate::prepareJob() {
 	PropagatingEitherWay* me = static_cast<PropagatingEitherWay*>(me_);
 
 	// After resolveInterface(), there is only one pull interface. As compute(), process one state of it.
-	if (hasStartState()) {
-		const InterfaceState& state = fetchStartState();
-		// enforce property initialization from INTERFACE
-		properties_.performInitFrom(Stage::INTERFACE, state.properties());
-		return [me, state_ptr = &state] { me->computeForward(*state_ptr); };
-	}
-	assert(hasEndState());
-	const InterfaceState& state = fetchEndState();
+	const bool forward = hasStartState();
+	assert(forward || hasEndState());
+	const InterfacePtr pull = forward ? starts_ : ends_;
+	Interface::container_type taken = pull->remove(pull->begin());
+	const InterfaceState* state = taken.front();
 	// enforce property initialization from INTERFACE
-	properties_.performInitFrom(Stage::INTERFACE, state.properties());
-	return [me, state_ptr = &state] { me->computeBackward(*state_ptr); };
+	properties_.performInitFrom(Stage::INTERFACE, state->properties());
+
+	// if the job gets cancelled, the state returns to the interface (with the priority it has by then)
+	restore_job_input_ = [pull, taken = std::move(taken)]() mutable { pull->reinsert(std::move(taken)); };
+	if (forward)
+		return [me, state] { me->computeForward(*state); };
+	return [me, state] { me->computeBackward(*state); };
 }
 
 PropagatingEitherWay::PropagatingEitherWay(const std::string& name)
@@ -1072,6 +1081,8 @@ std::function<void()> ConnectingPrivate::prepareJob() {
 	const InterfaceState* from = &*top.first;
 	const InterfaceState* to = &*top.second;
 	assert(from->priority().enabled() && to->priority().enabled());
+	// if the job gets cancelled, the pair becomes pending again (sorted by the priorities its states have by then)
+	restore_job_input_ = [this, top] { pending.insert(top); };
 	Connecting* me = static_cast<Connecting*>(me_);
 	return [me, from, to] { me->compute(*from, *to); };
 }
