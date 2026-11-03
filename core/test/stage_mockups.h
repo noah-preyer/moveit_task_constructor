@@ -7,6 +7,8 @@
 
 #include "models.h"
 
+#include <atomic>
+
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
@@ -154,6 +156,23 @@ struct TaskTestBase : public testing::Test
 		container.add(Stage::pointer(stage));
 		return stage;
 	}
+};
+
+/* helper to measure how many threads run a section of code concurrently:
+   hold a Scope while working, then inspect max */
+struct ConcurrencyProbe
+{
+	std::atomic<int> current{ 0 }, max{ 0 };
+
+	struct Scope
+	{
+		explicit Scope(ConcurrencyProbe& p);
+		~Scope();
+		Scope(const Scope&) = delete;
+		Scope& operator=(const Scope&) = delete;
+
+		ConcurrencyProbe& probe;
+	};
 };
 
 #define EXPECT_COSTS(value, matcher)                                           \

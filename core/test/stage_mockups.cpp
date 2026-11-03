@@ -22,6 +22,18 @@ void resetMockupIds() {
 	BackwardMockup::id_ = 0;
 }
 
+ConcurrencyProbe::Scope::Scope(ConcurrencyProbe& p) : probe(p) {
+	const int now = ++probe.current;
+	// raise max to at least now, never lowering a value concurrently stored by another thread
+	int seen = probe.max.load();
+	while (seen < now && !probe.max.compare_exchange_weak(seen, now)) {
+	}
+}
+
+ConcurrencyProbe::Scope::~Scope() {
+	--probe.current;
+}
+
 PredefinedCosts::PredefinedCosts(std::list<double>&& costs, bool finite)
   : costs_{ std::move(costs) }, finite_{ finite } {}
 

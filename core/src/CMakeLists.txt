@@ -3,6 +3,7 @@ add_library(${PROJECT_NAME} SHARED
 	${PROJECT_INCLUDE}/container_p.h
 	${PROJECT_INCLUDE}/cost_queue.h
 	${PROJECT_INCLUDE}/introspection.h
+	${PROJECT_INCLUDE}/job_scheduler_p.h
 	${PROJECT_INCLUDE}/marker_tools.h
 	${PROJECT_INCLUDE}/merge.h
 	${PROJECT_INCLUDE}/moveit_compat.h
@@ -23,6 +24,7 @@ add_library(${PROJECT_NAME} SHARED
 	container.cpp
 	cost_terms.cpp
 	introspection.cpp
+	job_scheduler.cpp
 	marker_tools.cpp
 	merge.cpp
 	properties.cpp
