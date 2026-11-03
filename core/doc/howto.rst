@@ -492,12 +492,17 @@ Semantics
   in tests.
 - **Callbacks always run on the thread that called** ``plan()``. This holds for task callbacks, solution callbacks
   and the publishing of introspection data. They need no locking against the planning loop.
-- **Timeout, preemption and max_solutions.** When planning ends for one of these reasons, queued jobs are dropped
-  and no new job is started, but jobs that are already running are waited for and their results are kept. The
-  overrun is therefore bounded by the longest running job, and the number of solutions can exceed ``max_solutions``
-  by up to the number of running jobs.
-- **Exceptions.** An exception thrown by a stage on a worker is not lost: ``plan()`` waits until all running jobs
-  have finished and then rethrows it.
+- **Timeout, preemption and max_solutions.** When planning ends for one of these reasons, no new job is started.
+  Queued jobs are cancelled before they start, and their inputs are put back, so a later ``plan()`` continues where
+  this one stopped, as with sequential planning. Jobs that are already running are waited for and their results are
+  kept. The overrun is therefore bounded by the longest running job, and the number of solutions can exceed
+  ``max_solutions`` by the solutions completed by the jobs still running when the limit was reached.
+- **Exceptions.** An exception thrown by a stage on a worker is not lost: planning stops as described above, and
+  ``plan()`` rethrows the exception once all running jobs have finished.
+  An exception thrown on the planning thread, e.g. by a solution or task callback, aborts planning: ``plan()``
+  waits for the running jobs, discards their results and rethrows the exception. The inputs of the discarded jobs
+  are put back as well, so a later ``plan()`` computes them again. Generators take no input, so the result of a
+  discarded generator job is lost.
 - **Compute time.** In parallel mode, the compute time reported for a container is the sum of the job times of its
   children. It can be larger than the wall-clock time.
 - **Python.** ``Task.plan()`` releases the GIL while planning, and Python stage overrides and Python cost terms
@@ -516,8 +521,11 @@ Known limits
 - **No backpressure.** A fast generator can run far ahead of a slow downstream stage, and the generated states pile
   up in between. A generator that never ends is therefore a problem in parallel mode. Make generators finite or
   bounded, e.g. keep the ``max_solutions`` property of ``GenerateRandomPose`` small.
-- **Fallbacks.** A ``Fallbacks`` container waits for the in-flight job of its current child before it tries the next
-  child. A child consisting of several stages, wrapped in ``Fallbacks``, is thus computed one job at a time.
+- **Fallbacks.** While any job of the current child of a ``Fallbacks`` container (or of the child's descendants) is
+  in flight, ``Fallbacks`` starts nothing new for that child and does not move on to the next child. Thus, the stages
+  of a child consisting of several stages do not compute concurrently. (This applies to generator and propagator
+  ``Fallbacks``. In a connecting ``Fallbacks``, a child can already work on a pair that failed in the previous child
+  while that child computes its next pair.)
 - **At most one job per stage.** Concurrency comes from different stages working at the same time. A single slow
   stage is not sped up.
 - **Introspection.** The existing race between the ``get_solution`` service of the introspection and planning is
