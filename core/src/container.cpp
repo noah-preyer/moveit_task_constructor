@@ -938,6 +938,11 @@ void FallbacksPrivateCommon::reset() {
 }
 
 bool FallbacksPrivateCommon::canCompute() const {
+	// A busy child cannot compute right now, but it may still produce solutions (or failures) for the current job
+	// when its running job is committed. Thus wait for it, rather than advancing to the next job or child.
+	if (current_ != children().end() && (*current_)->pimpl()->busy())
+		return false;
+
 	while (current_ != children().end() &&  // not completely exhausted
 	       !(*current_)->pimpl()->canCompute())  // but current child cannot compute
 		return const_cast<FallbacksPrivateCommon*>(this)->nextJob();  // advance to next job
@@ -1076,11 +1081,10 @@ void FallbacksPrivateConnect::compute() {
 }
 
 void FallbacksPrivateConnect::onNewFailure(const Stage& child, const InterfaceState* from, const InterfaceState* to) {
-	// expect failure to be reported from active child
-	assert(active_ != children().end() && active_->get() == &child);
-	(void)child;
-	// ... thus we can use std::next(active_) to find the next child
-	auto next = std::next(active_);
+	// The failing child is not necessarily the one picked last for compute(): in threaded mode, the failure of
+	// a job is only reported when the job is committed, by which time another child might have been picked.
+	// Thus find the next child relative to the failing child.
+	auto next = std::next(child.pimpl()->it());
 
 	// NOLINTNEXTLINE(readability-identifier-naming)
 	auto findIteratorFor = [](const InterfaceState* state, const Interface& interface) {

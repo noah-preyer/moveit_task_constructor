@@ -342,3 +342,75 @@ TEST_F(ParallelPlanning, ZeroMeansHardwareConcurrency) {
 	EXPECT_TRUE(t.plan());
 	EXPECT_COSTS(t.solutions(), ElementsAre(3, 3, 3));
 }
+
+// the children of Fallbacks compute as jobs, whose results are only committed once they have finished
+struct ParallelFallbacks : TaskTestBase
+{
+	ParallelFallbacks() { t.setNumThreads(4); }
+};
+
+// the second child must not be started while the first one is still computing (and might succeed)
+TEST_F(ParallelFallbacks, PropagatorDoesNotSkipBusyChild) {
+	add(t, new GeneratorMockup({ 0, 0, 0 }));
+	auto fallbacks = add(t, new Fallbacks());
+	auto fwd1 = add(*fallbacks, withWork(new ForwardMockup(PredefinedCosts::constant(1.0)), 20ms));
+	auto fwd2 = add(*fallbacks, withWork(new ForwardMockup(PredefinedCosts::constant(2.0)), 20ms));
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(1, 1, 1));
+	EXPECT_EQ(fwd1->runs_, 3u);
+	EXPECT_EQ(fwd2->runs_, 0u);
+}
+
+TEST_F(ParallelFallbacks, PropagatorTriesNextAfterFailure) {
+	add(t, new GeneratorMockup({ 0, 0, 0 }));
+	auto fallbacks = add(t, new Fallbacks());
+	auto fwd1 = add(*fallbacks, withWork(new ForwardMockup(PredefinedCosts::constant(INF)), 20ms));
+	auto fwd2 = add(*fallbacks, withWork(new ForwardMockup(PredefinedCosts::constant(1.0)), 20ms));
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(1, 1, 1));
+	EXPECT_EQ(fwd1->runs_, 3u);
+	EXPECT_EQ(fwd2->runs_, 3u);
+}
+
+TEST_F(ParallelFallbacks, GeneratorStaysWithFirstSuccessful) {
+	auto fallbacks = add(t, new Fallbacks());
+	auto gen1 = add(*fallbacks, withWork(new GeneratorMockup({ 1 }), 20ms));
+	auto gen2 = add(*fallbacks, withWork(new GeneratorMockup({ 2 }), 20ms));
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(1));
+	EXPECT_EQ(gen1->runs_, 1u);
+	EXPECT_EQ(gen2->runs_, 0u);
+}
+
+// a failed pair is handed to the next child, also if another child was picked for compute() before the failure
+// got committed
+TEST_F(ParallelFallbacks, ConnectPassesFailedPairToNextChild) {
+	add(t, new GeneratorMockup({ 0, 0 }));
+	auto fallbacks = add(t, new Fallbacks());
+	auto con1 = add(*fallbacks, withWork(new ConnectMockup(PredefinedCosts::constant(INF)), 20ms));
+	auto con2 = add(*fallbacks, withWork(new ConnectMockup(PredefinedCosts::constant(1.0)), 20ms));
+	add(t, new GeneratorMockup({ 0, 0 }));
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(1, 1, 1, 1));
+	EXPECT_EQ(con1->runs_, 4u);
+	EXPECT_EQ(con2->runs_, 4u);
+}
+
+// a wrapper's own compute() runs on the planning thread, while the jobs of its child run on workers
+struct ParallelWrappers : TaskTestBase
+{
+	ParallelWrappers() { t.setNumThreads(4); }
+};
+
+TEST_F(ParallelWrappers, DelayingWrapperForwardsChildJobs) {
+	add(t, new GeneratorMockup({ 0, 0, 0, 0, 0 }));
+	auto child = Stage::pointer(withWork(new ForwardMockup(PredefinedCosts::constant(1.0)), 10ms));
+	add(t, new DelayingWrapper({ 1, 0, 2 }, std::move(child)));
+
+	EXPECT_TRUE(t.plan());
+	EXPECT_COSTS(t.solutions(), ElementsAre(1, 1, 1, 1, 1));
+}
