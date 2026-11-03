@@ -530,5 +530,9 @@ Known limits
   stage is not sped up.
 - **Introspection.** The existing race between the ``get_solution`` service of the introspection and planning is
   unchanged.
+- **Planning again after an early stop (known issue).** If ``plan()`` stopped early (``max_solutions``, timeout or
+  preemption) while children of a container (e.g. ``Alternatives``) had queued jobs, calling ``plan()`` again
+  without ``reset()`` can crash. The cause is a pre-existing bug: ``init()`` replaces the interfaces of containers.
+  Call ``reset()`` before planning again in this situation.
 - **Planner sharing.** Stages that share a planner, or that use ``PipelinePlanner`` instances on the same cached
   pipeline, are serialized (see above).

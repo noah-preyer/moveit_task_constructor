@@ -26,6 +26,13 @@ This repository provides the following branches:
 
 We provide a tutorial for a pick-and-place pipeline without bells & whistles [as part of the MoveIt tutorials](https://moveit.github.io/moveit_tutorials/doc/moveit_task_constructor/moveit_task_constructor_tutorial.html).
 
+## Parallel planning
+
+`Task::plan()` can compute independent stages on several worker threads (`task.setNumThreads(n)`, Python:
+`task.num_threads = n`). The default of 1 keeps sequential planning.
+See [PARALLEL_PLANNING.md](PARALLEL_PLANNING.md) for an overview of the feature, how it works, its API and its known
+issues, and the [how-to guide](core/doc/howto.rst) for the full user documentation.
+
 ## Roadmap
 
 **Feedback, reports and contributions are very welcome.**
